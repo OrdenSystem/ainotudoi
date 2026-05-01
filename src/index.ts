@@ -44,6 +44,8 @@ import {
   cloneAction,
   removeView,
   removeAction,
+  cloneBot,
+  removeBot,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -404,6 +406,36 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_clone_bot",
+    description:
+      "既存 Bot をクローンして新規 Bot 作成。AppBots/AppEvents/AppProcesses/Tasks の 4 配列に分散する Bot 構造を一括コピーし、名前と ComponentId を再生成する。Capture-and-Replay 安全パターン。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        sourceBotName: { type: "string", description: "コピー元の Bot 名" },
+        newBotName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["sourceBotName", "newBotName"],
+    },
+  },
+  {
+    name: "appsheet_remove_bot",
+    description: "Bot を削除（紐づく Event / Process / Tasks も自動的に削除）。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        botName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["botName"],
+    },
+  },
+  {
     name: "appsheet_remove_action",
     description: "Action を削除する。System Action（Add/Edit/Delete）の削除は推奨されない。デフォルト dry-run。",
     inputSchema: {
@@ -512,6 +544,10 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return removeView(args as Parameters<typeof removeView>[0]);
     case "appsheet_remove_action":
       return removeAction(args as Parameters<typeof removeAction>[0]);
+    case "appsheet_clone_bot":
+      return cloneBot(args as Parameters<typeof cloneBot>[0]);
+    case "appsheet_remove_bot":
+      return removeBot(args as Parameters<typeof removeBot>[0]);
     case "appsheet_set_column_description":
       return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
     default:

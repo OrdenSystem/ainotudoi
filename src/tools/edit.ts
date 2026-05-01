@@ -598,6 +598,237 @@ export async function cloneAction(args: {
   };
 }
 
+export async function cloneBot(args: {
+  appId?: string;
+  appName?: string;
+  sourceBotName: string;
+  newBotName: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  source: string;
+  newBot: string;
+  componentIds?: { bot: string; event: string; process: string; tasks: string[] };
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown>;
+  const bots = (behavior.AppBots ?? []) as Array<Record<string, unknown>>;
+  const events = (behavior.AppEvents ?? []) as Array<Record<string, unknown>>;
+  const processes = (behavior.AppProcesses ?? []) as Array<Record<string, unknown>>;
+  const tasks = (behavior.Tasks ?? []) as Array<Record<string, unknown>>;
+
+  const sourceBot = bots.find((b) => b.Name === args.sourceBotName);
+  if (!sourceBot) {
+    const known = bots.map((b) => b.Name).join(", ");
+    throw new Error(`元の Bot '${args.sourceBotName}' が見つかりません。既知: ${known}`);
+  }
+  if (bots.find((b) => b.Name === args.newBotName)) {
+    throw new Error(`Bot '${args.newBotName}' は既に存在します`);
+  }
+
+  const sourceEvent = events.find((e) => e.Name === sourceBot.EventName);
+  const sourceProcess = processes.find((p) => p.Name === sourceBot.ProcessName);
+  if (!sourceEvent) throw new Error(`Bot に紐づく Event '${sourceBot.EventName}' が見つかりません`);
+  if (!sourceProcess) throw new Error(`Bot に紐づく Process '${sourceBot.ProcessName}' が見つかりません`);
+
+  // Process.Nodes が参照する Action/Task 名を集める（name フィールド）
+  const sourceNodes = (sourceProcess.Nodes ?? []) as Array<Record<string, unknown>>;
+  const referencedTaskNames = new Set<string>();
+  for (const node of sourceNodes) {
+    if (typeof node.Action === "string") referencedTaskNames.add(node.Action);
+  }
+  const sourceTasks = tasks.filter((t) => referencedTaskNames.has(t.Name as string));
+
+  // 新しい名前体系
+  const newEventName = `event_${args.newBotName}`;
+  const newProcessName = `Process for ${args.newBotName}`;
+  const newTaskNameMap = new Map<string, string>();
+  for (const t of sourceTasks) {
+    newTaskNameMap.set(t.Name as string, `Task for ${args.newBotName} - ${t.Name}`);
+  }
+
+  // Bot
+  const newBot = JSON.parse(JSON.stringify(sourceBot)) as Record<string, unknown>;
+  newBot.Name = args.newBotName;
+  newBot.EventName = newEventName;
+  newBot.ProcessName = newProcessName;
+  newBot.ComponentId = generateComponentId();
+  newBot._isNew = true;
+  newBot._version = 0;
+  newBot._index = bots.length;
+  newBot._path = `Behavior.AppBots[${bots.length}]`;
+
+  // Event
+  const newEvent = JSON.parse(JSON.stringify(sourceEvent)) as Record<string, unknown>;
+  newEvent.Name = newEventName;
+  newEvent.ComponentId = generateComponentId();
+  if ((newEvent.AppEventDefinition as Record<string, unknown>)?.ComponentId) {
+    (newEvent.AppEventDefinition as Record<string, unknown>).ComponentId = generateComponentId();
+  }
+  newEvent._isNew = true;
+  newEvent._version = 0;
+  newEvent._index = events.length;
+  newEvent._path = `Behavior.AppEvents[${events.length}]`;
+
+  // Process（Nodes 内の Action 参照を新しい Task 名に置換）
+  const newProcess = JSON.parse(JSON.stringify(sourceProcess)) as Record<string, unknown>;
+  newProcess.Name = newProcessName;
+  newProcess.ComponentId = generateComponentId();
+  newProcess._isNew = true;
+  newProcess._version = 0;
+  newProcess._index = processes.length;
+  newProcess._path = `Behavior.AppProcesses[${processes.length}]`;
+  newProcess.ProcessStateTableName = `${newProcessName} State Table`;
+  const newNodes = (newProcess.Nodes ?? []) as Array<Record<string, unknown>>;
+  for (const node of newNodes) {
+    if (typeof node.Action === "string" && newTaskNameMap.has(node.Action)) {
+      node.Action = newTaskNameMap.get(node.Action);
+    }
+    node.ComponentId = generateComponentId();
+  }
+
+  // Tasks（複数ありうる）
+  const newTasks: Array<Record<string, unknown>> = [];
+  for (const t of sourceTasks) {
+    const newTask = JSON.parse(JSON.stringify(t)) as Record<string, unknown>;
+    newTask.Name = newTaskNameMap.get(t.Name as string)!;
+    newTask.ComponentId = generateComponentId();
+    newTask._isNew = true;
+    newTask._version = 0;
+    newTask._index = tasks.length + newTasks.length;
+    newTask._path = `Behavior.Tasks[${tasks.length + newTasks.length}]`;
+    newTasks.push(newTask);
+  }
+
+  // 配列に push
+  bots.push(newBot);
+  events.push(newEvent);
+  processes.push(newProcess);
+  for (const t of newTasks) tasks.push(t);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      source: args.sourceBotName,
+      newBot: args.newBotName,
+      message: `dry-run。Bot/Event/Process/Tasks(${newTasks.length}) のクローン構築済み。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedBots = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppBots as Array<Record<string, unknown>> | undefined;
+  const created = refreshedBots?.find((b) => b.Name === args.newBotName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    source: args.sourceBotName,
+    newBot: args.newBotName,
+    componentIds: {
+      bot: newBot.ComponentId as string,
+      event: newEvent.ComponentId as string,
+      process: newProcess.ComponentId as string,
+      tasks: newTasks.map((t) => t.ComponentId as string),
+    },
+    message: created
+      ? `✅ Bot '${args.newBotName}' を '${args.sourceBotName}' からクローン作成完了（Event/Process/Tasks も含む）`
+      : `⚠️ saveapp は Success だが事後検証で Bot が見当たらない`,
+  };
+}
+
+export async function removeBot(args: {
+  appId?: string;
+  appName?: string;
+  botName: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  botName: string;
+  removedEvent?: string;
+  removedProcess?: string;
+  removedTasks?: string[];
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown>;
+  const bots = (behavior.AppBots ?? []) as Array<Record<string, unknown>>;
+  const events = (behavior.AppEvents ?? []) as Array<Record<string, unknown>>;
+  const processes = (behavior.AppProcesses ?? []) as Array<Record<string, unknown>>;
+  const tasks = (behavior.Tasks ?? []) as Array<Record<string, unknown>>;
+
+  const botIdx = bots.findIndex((b) => b.Name === args.botName);
+  if (botIdx < 0) throw new Error(`Bot '${args.botName}' が見つかりません`);
+  const bot = bots[botIdx];
+
+  const eventName = bot.EventName as string | undefined;
+  const processName = bot.ProcessName as string | undefined;
+
+  // 紐づく Process の Nodes が参照する Task 名を集める
+  const taskNamesToRemove = new Set<string>();
+  if (processName) {
+    const proc = processes.find((p) => p.Name === processName);
+    const nodes = (proc?.Nodes ?? []) as Array<Record<string, unknown>>;
+    for (const n of nodes) {
+      if (typeof n.Action === "string") taskNamesToRemove.add(n.Action);
+    }
+  }
+
+  bots.splice(botIdx, 1);
+  if (eventName) {
+    const eIdx = events.findIndex((e) => e.Name === eventName);
+    if (eIdx >= 0) events.splice(eIdx, 1);
+  }
+  if (processName) {
+    const pIdx = processes.findIndex((p) => p.Name === processName);
+    if (pIdx >= 0) processes.splice(pIdx, 1);
+  }
+  const removedTaskNames: string[] = [];
+  for (let i = tasks.length - 1; i >= 0; i--) {
+    const tn = tasks[i].Name as string;
+    if (taskNamesToRemove.has(tn)) {
+      tasks.splice(i, 1);
+      removedTaskNames.push(tn);
+    }
+  }
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      botName: args.botName,
+      removedEvent: eventName,
+      removedProcess: processName,
+      removedTasks: removedTaskNames,
+      message: "dry-run。apply: true で削除送信。",
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const stillThere = (((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppBots as Array<Record<string, unknown>> | undefined)?.find((b) => b.Name === args.botName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !stillThere,
+    botName: args.botName,
+    removedEvent: eventName,
+    removedProcess: processName,
+    removedTasks: removedTaskNames,
+    message: stillThere ? "⚠️ 削除拒否された可能性" : `✅ Bot '${args.botName}' とその Event/Process/Tasks を削除完了`,
+  };
+}
+
 export async function removeView(args: {
   appId?: string;
   appName?: string;

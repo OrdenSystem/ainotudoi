@@ -138,6 +138,8 @@ AppSheet Editor の `/api/loadApp/<App名>` レスポンスにアプリ定義丸
 | `appsheet_clone_action` | 既存 Action をクローンして新規 Action 作成（Name/Table/ColumnToEdit 置換可） |
 | `appsheet_remove_view` | View を削除 |
 | `appsheet_remove_action` | Action を削除（System Action は推奨せず） |
+| `appsheet_clone_bot` | 既存 Bot をクローン（Bot + Event + Process + Tasks の 4 配列まとめて再生成） |
+| `appsheet_remove_bot` | Bot とそれに紐づく Event / Process / Tasks を一括削除 |
 
 #### Cookie の取得
 
