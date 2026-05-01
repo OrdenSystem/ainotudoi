@@ -132,6 +132,8 @@ AppSheet Editor の `/api/loadApp/<App名>` レスポンスにアプリ定義丸
 | `appsheet_set_column_flag` | 列のブールフラグを書換（IsHidden/Searchable/IsLabel/IsScannable/IsNfcScannable/IsSensitive/ResetOnEdit/IsRequired/DefEdit） |
 | `appsheet_set_column_type` | 列の Type を変更（Text↔LongText 等。安全リストで判定し外れる変換は warning） |
 | `appsheet_set_column_description` | 列の Description を更新 |
+| `appsheet_add_virtual_column` | 新規バーチャル列を追加（AppFormula 必須・型指定可・dry-run/apply） |
+| `appsheet_remove_column` | 列を削除（バーチャル列は安全・実列は AppSheet 側のみ削除） |
 
 #### Cookie の取得
 

@@ -64,7 +64,15 @@ async function fetchLoadApp(appName: string): Promise<{ raw: string; app: AppDef
   return { raw: wrapper.app, app: JSON.parse(wrapper.app) as AppDef };
 }
 
-async function postSaveApp(appId: string, appName: string, app: AppDef): Promise<{ status: number; bodyHead: string }> {
+interface SaveAppResponse {
+  status: number;
+  success: boolean;
+  errorDescription?: string;
+  retryable?: boolean;
+  app?: AppDef;
+}
+
+async function postSaveApp(appId: string, appName: string, app: AppDef): Promise<SaveAppResponse> {
   const body = {
     location: "0, 0",
     locale: "ja",
@@ -80,7 +88,24 @@ async function postSaveApp(appId: string, appName: string, app: AppDef): Promise
   });
   const text = await r.text();
   if (!r.ok) throw new Error(`saveapp 失敗: ${r.status} ${text.slice(0, 300)}`);
-  return { status: r.status, bodyHead: text.slice(0, 200) };
+  let parsed: { Success?: boolean; ErrorDescription?: string; Retryable?: boolean; App?: string } = {};
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { status: r.status, success: false, errorDescription: "saveapp レスポンスが JSON でない" };
+  }
+  if (!parsed.Success) {
+    throw new Error(`saveapp 内部エラー: ${parsed.ErrorDescription ?? "(no description)"}${parsed.Retryable ? " [retryable]" : ""}`);
+  }
+  let savedApp: AppDef | undefined;
+  if (typeof parsed.App === "string") {
+    try {
+      savedApp = JSON.parse(parsed.App) as AppDef;
+    } catch {
+      // ignore
+    }
+  }
+  return { status: r.status, success: true, errorDescription: parsed.ErrorDescription, retryable: parsed.Retryable, app: savedApp };
 }
 
 function findAttribute(app: AppDef, tableName: string, columnName: string): Record<string, unknown> {
@@ -180,8 +205,8 @@ export async function setColumnFlag(args: {
     };
   }
 
-  await postSaveApp(credential.appId, appName, app);
-  const { app: refreshed } = await fetchLoadApp(appName);
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
   const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
   const after = !!refreshedAttr[args.flag];
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -269,8 +294,8 @@ export async function setColumnType(args: {
     };
   }
 
-  await postSaveApp(credential.appId, appName, app);
-  const { app: refreshed } = await fetchLoadApp(appName);
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
   const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
   const after = (refreshedAttr.Type ?? "Unknown") as string;
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -286,6 +311,214 @@ export async function setColumnType(args: {
     verified: after === args.newType,
     warning,
     message: after === args.newType ? "✅ 適用完了・検証 OK" : `⚠️ 期待 '${args.newType}' だが現在 '${after}'。AppSheet 側で型変換が拒否された可能性。`,
+  };
+}
+
+function generateComponentId(): string {
+  // 26 char Crockford base32 (uppercase + 2-7), AppSheet 互換形式
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let id = "";
+  for (let i = 0; i < 26; i++) id += chars[Math.floor(Math.random() * 32)];
+  return id;
+}
+
+const TYPE_AUX_DEFAULTS: Record<string, string> = {
+  Text: '{"MaxLength":null,"MinLength":null,"LongTextFormatting":"Plain Text","IsMulticolumnKey":false,"Valid_If":null,"Error_Message_If_Invalid":null,"Show_If":null,"Required_If":null,"Editable_If":null,"Reset_If":null,"Suggested_Values":null}',
+  LongText: '{"MaxLength":null,"MinLength":null,"LongTextFormatting":"Plain Text","IsMulticolumnKey":false,"Valid_If":null,"Error_Message_If_Invalid":null,"Show_If":null,"Required_If":null,"Editable_If":null,"Reset_If":null,"Suggested_Values":null}',
+  Name: '{"MaxLength":null,"MinLength":null,"LongTextFormatting":"Plain Text","IsMulticolumnKey":false,"Valid_If":null,"Error_Message_If_Invalid":null,"Show_If":null,"Required_If":null,"Editable_If":null,"Reset_If":null,"Suggested_Values":null}',
+  Number: '{"MaxValue":null,"MinValue":null,"StepValue":null,"NumericDigits":null,"ShowThousandsSeparator":false,"PlaceholderText":null,"Valid_If":null,"Error_Message_If_Invalid":null,"Show_If":null,"Required_If":null,"Editable_If":null,"Reset_If":null,"Suggested_Values":null}',
+  Decimal: '{"MaxValue":null,"MinValue":null,"StepValue":null,"NumericDigits":null,"ShowThousandsSeparator":false,"PlaceholderText":null,"Valid_If":null,"Error_Message_If_Invalid":null,"Show_If":null,"Required_If":null,"Editable_If":null,"Reset_If":null,"Suggested_Values":null}',
+  Url: '{"Valid_If":null,"Error_Message_If_Invalid":null,"Show_If":null,"Required_If":null,"Editable_If":null,"Reset_If":null,"Suggested_Values":null,"LaunchExternal":false,"IsHyperLink":false}',
+  Email: '{"Valid_If":null,"Error_Message_If_Invalid":null,"Show_If":null,"Required_If":null,"Editable_If":null,"Reset_If":null,"Suggested_Values":null}',
+  Date: '{"Valid_If":null,"Error_Message_If_Invalid":null,"Show_If":null,"Required_If":null,"Editable_If":null,"Reset_If":null,"Suggested_Values":null}',
+  DateTime: '{"Valid_If":null,"Error_Message_If_Invalid":null,"Show_If":null,"Required_If":null,"Editable_If":null,"Reset_If":null,"Suggested_Values":null}',
+  Yes_No: '{"Valid_If":null,"Error_Message_If_Invalid":null,"Show_If":null,"Required_If":null,"Editable_If":null,"Reset_If":null,"Suggested_Values":null}',
+};
+
+export async function addVirtualColumn(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  formula: string;
+  resultType?: string;
+  description?: string;
+  displayName?: string;
+  isHidden?: boolean;
+  isLabel?: boolean;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  table: string;
+  column: string;
+  componentId?: string;
+  message: string;
+  warning?: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const schemas = app.AppData?.DataSchemas ?? [];
+  const sch = schemas.find((s) => s.AutoSchemaFrom === args.tableName);
+  if (!sch) {
+    const known = schemas.map((s) => s.AutoSchemaFrom || s.Name).join(", ");
+    throw new Error(`スキーマ '${args.tableName}' が見つかりません。既知: ${known}`);
+  }
+  const attrs = (sch.Attributes ?? []) as Array<Record<string, unknown>>;
+  if (attrs.find((a) => a.Name === args.columnName)) {
+    throw new Error(`列 '${args.columnName}' は既に存在します`);
+  }
+
+  const resultType = args.resultType ?? "Text";
+  const typeAux = TYPE_AUX_DEFAULTS[resultType] ?? TYPE_AUX_DEFAULTS.Text;
+  const componentId = generateComponentId();
+  const formulaText = args.formula.startsWith("=") ? args.formula : "=" + args.formula;
+  const newIndex = attrs.length;
+
+  const newAttr: Record<string, unknown> = {
+    ExprLookup: {},
+    Name: args.columnName,
+    Type: resultType,
+    TypeFromProvider: null,
+    TypeAuxData: typeAux,
+    Description: args.description ?? null,
+    DisplayName: args.displayName ?? null,
+    IsRequired: false,
+    Default: null,
+    DefaultExpression: null,
+    DefEdit: true,
+    IsSys: false,
+    DefinitionIsFixed: false,
+    IsKey: false,
+    IsKeyPart: false,
+    IsReadOnly: true,
+    ResetOnEdit: false,
+    IsHidden: args.isHidden ?? false,
+    Formula: null,
+    AsdbFormula: null,
+    Category: null,
+    FormulaVersion: 0,
+    AppFormula: formulaText,
+    IsLabel: args.isLabel ?? false,
+    IsScannable: null,
+    IsNfcScannable: null,
+    Searchable: null,
+    IsVirtual: true,
+    IsAutoGenerated: false,
+    IsSensitive: false,
+    LocaleName: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: componentId,
+    _isNew: true,
+    _version: 0,
+    _index: newIndex,
+    _path: `AppData.DataSchemas[${schemas.indexOf(sch)}].Attributes[${newIndex}]`,
+  };
+
+  attrs.push(newAttr);
+  sch.Attributes = attrs;
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      table: args.tableName,
+      column: args.columnName,
+      message: `dry-run。新規バーチャル列 '${args.columnName}' (${resultType}) を追加するペイロードを構築済み。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedSch = (refreshed.AppData?.DataSchemas ?? []).find(
+    (s) => s.AutoSchemaFrom === args.tableName,
+  );
+  const created = (refreshedSch?.Attributes ?? []).find((a) => a.Name === args.columnName) as Record<string, unknown> | undefined;
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    table: args.tableName,
+    column: args.columnName,
+    componentId: created?.ComponentId as string,
+    message: created
+      ? `✅ 新規バーチャル列 '${args.columnName}' (${resultType}) 作成完了・検証 OK`
+      : `⚠️ saveapp は Success だが事後検証で列が見当たらない`,
+  };
+}
+
+export async function removeColumn(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  table: string;
+  column: string;
+  isVirtual: boolean;
+  message: string;
+  warning?: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const schemas = app.AppData?.DataSchemas ?? [];
+  const schIndex = schemas.findIndex((s) => s.AutoSchemaFrom === args.tableName);
+  if (schIndex < 0) throw new Error(`スキーマ '${args.tableName}' が見つかりません`);
+  const sch = schemas[schIndex];
+  const attrs = (sch.Attributes ?? []) as Array<Record<string, unknown>>;
+  const idx = attrs.findIndex((a) => a.Name === args.columnName);
+  if (idx < 0) throw new Error(`列 '${args.columnName}' が見つかりません`);
+
+  const target = attrs[idx];
+  const isVirtual = !!target.IsVirtual;
+  const isKey = !!target.IsKey;
+  const warnings: string[] = [];
+  if (isKey) warnings.push("キー列の削除は推奨されません（参照系が崩壊する可能性）");
+  if (!isVirtual) warnings.push("非バーチャル列を削除する場合、データソース側の列が残ります");
+
+  attrs.splice(idx, 1);
+  sch.Attributes = attrs;
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      table: args.tableName,
+      column: args.columnName,
+      isVirtual,
+      warning: warnings.join(" / ") || undefined,
+      message: "dry-run。apply: true で削除送信。",
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedSch = (refreshed.AppData?.DataSchemas ?? []).find(
+    (s) => s.AutoSchemaFrom === args.tableName,
+  );
+  const stillThere = (refreshedSch?.Attributes ?? []).find((a) => a.Name === args.columnName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !stillThere,
+    table: args.tableName,
+    column: args.columnName,
+    isVirtual,
+    warning: warnings.join(" / ") || undefined,
+    message: stillThere
+      ? "⚠️ saveapp は Success だが列がまだ存在する（AppSheet が削除を拒否した可能性）"
+      : `✅ 列 '${args.columnName}' 削除完了・検証 OK`,
   };
 }
 
@@ -329,8 +562,8 @@ export async function setColumnDescription(args: {
     };
   }
 
-  await postSaveApp(credential.appId, appName, app);
-  const { app: refreshed } = await fetchLoadApp(appName);
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
   const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
   const after = (refreshedAttr.Description ?? null) as string | null;
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");

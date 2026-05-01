@@ -38,6 +38,8 @@ import {
   setColumnFlag,
   setColumnDescription,
   setColumnType,
+  addVirtualColumn,
+  removeColumn,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -326,6 +328,44 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_virtual_column",
+    description:
+      "テーブルに新規バーチャル列（仮想列）を追加。AppFormula 必須。AppSheet が自動で式パース・依存解決・ComponentId 確定する。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string", description: "新しい列の名前" },
+        formula: { type: "string", description: "AppFormula。例: '[テーマ] & \" - \" & [カテゴリ]'。先頭の = は省略可" },
+        resultType: { type: "string", description: "結果の型。Text/LongText/Number/Decimal/Url/Email/Date/DateTime/Yes_No/Name 等。既定 Text" },
+        description: { type: "string" },
+        displayName: { type: "string" },
+        isHidden: { type: "boolean" },
+        isLabel: { type: "boolean" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "formula"],
+    },
+  },
+  {
+    name: "appsheet_remove_column",
+    description:
+      "テーブルから列を削除。バーチャル列は安全。実列の削除はデータソース側に影響しないが AppSheet 上の参照（Action/View/Slice）が壊れる可能性。キー列は推奨されない。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName"],
+    },
+  },
+  {
     name: "appsheet_set_column_description",
     description:
       "列の Description を更新。デフォルトは dry-run。AppSheet 側は = で始まると式扱いになる点に注意。",
@@ -392,6 +432,10 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return setColumnFlag(args as Parameters<typeof setColumnFlag>[0]);
     case "appsheet_set_column_type":
       return setColumnType(args as Parameters<typeof setColumnType>[0]);
+    case "appsheet_add_virtual_column":
+      return addVirtualColumn(args as Parameters<typeof addVirtualColumn>[0]);
+    case "appsheet_remove_column":
+      return removeColumn(args as Parameters<typeof removeColumn>[0]);
     case "appsheet_set_column_description":
       return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
     default:
