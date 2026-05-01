@@ -33,6 +33,12 @@ import {
   getViews,
   getBots,
 } from "./tools/appdef.js";
+import {
+  refreshAppDef,
+  setColumnFlag,
+  setColumnDescription,
+  setColumnType,
+} from "./tools/edit.js";
 
 const tools: Tool[] = [
   {
@@ -269,6 +275,73 @@ const tools: Tool[] = [
       },
     },
   },
+  {
+    name: "appsheet_refresh_app_def",
+    description:
+      "Cookie 認証で /api/loadApp を叩き snapshots/appdef-<appId>.json を再生成する。HAR 取得手順を省略できる。Cookie が期限切れなら .env の APPSHEET_COOKIE を再取得する必要あり。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string", description: "AppSheet 内部 App Name（省略時はスナップショットから取得）" },
+      },
+    },
+  },
+  {
+    name: "appsheet_set_column_flag",
+    description:
+      "列のブール系フラグを書き換え。対象は IsHidden / Searchable / IsLabel / IsScannable / IsNfcScannable / IsSensitive / ResetOnEdit / IsRequired / DefEdit のみ。デフォルトは dry-run。実適用は apply: true 指定が必須。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string" },
+        flag: {
+          type: "string",
+          enum: ["IsHidden", "Searchable", "IsLabel", "IsScannable", "IsNfcScannable", "IsSensitive", "ResetOnEdit", "IsRequired", "DefEdit"],
+        },
+        value: { type: "boolean" },
+        apply: { type: "boolean", description: "true で実際に saveapp に POST。省略時 false（dry-run）" },
+      },
+      required: ["tableName", "columnName", "flag", "value"],
+    },
+  },
+  {
+    name: "appsheet_set_column_type",
+    description:
+      "列の Type を変更（Text/LongText/Number/Decimal/Url/Email/Phone 等）。互換性ある変換は安全リストで判定し、リスト外は warning を返す。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string" },
+        newType: { type: "string", description: "Text / LongText / Number / Decimal / Percent / Url / Email / Phone / Name / Date / DateTime / Time / Enum / Ref など" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "newType"],
+    },
+  },
+  {
+    name: "appsheet_set_column_description",
+    description:
+      "列の Description を更新。デフォルトは dry-run。AppSheet 側は = で始まると式扱いになる点に注意。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string" },
+        description: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "description"],
+    },
+  },
 ];
 
 type ToolArgs = Record<string, unknown>;
@@ -313,6 +386,14 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return getViews(args as Parameters<typeof getViews>[0]);
     case "appsheet_get_bots":
       return getBots(args as Parameters<typeof getBots>[0]);
+    case "appsheet_refresh_app_def":
+      return refreshAppDef(args as Parameters<typeof refreshAppDef>[0]);
+    case "appsheet_set_column_flag":
+      return setColumnFlag(args as Parameters<typeof setColumnFlag>[0]);
+    case "appsheet_set_column_type":
+      return setColumnType(args as Parameters<typeof setColumnType>[0]);
+    case "appsheet_set_column_description":
+      return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }

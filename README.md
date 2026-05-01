@@ -9,7 +9,7 @@ GCP / Salesforce / SQL は Claude Code から API 経由で操作できるが、
 - **Phase 1**：AppSheet Application API v2（公式・データ CRUD）を MCP ツールとして提供 ✅
 - **Phase 2**：AppSheet 内部 OpenAPI スナップショットからテーブル/列構造・型・enum を取得 ✅
 - **Phase 3**：HAR から loadApp レスポンスを抽出し、式・仮想列・Action・View を取得 ✅
-- **Phase 4**：Editor 直接操作で式更新・Action/Bot のトグル（Playwright・実験的・予定）
+- **Phase 4**：Cookie 認証で /api/loadApp と /api/saveapp を直接叩き、列のフラグ・型・Description を書換 ✅
 
 **プロジェクト非依存設計**。複数の AppSheet アプリを `.env` の追記だけで切り替えられる。
 
@@ -123,6 +123,35 @@ AppSheet Editor の `/api/loadApp/<App名>` レスポンスにアプリ定義丸
 - Action の **値式・条件式**（例: `[WP投稿URL]` / `NOT(ISBLANK([WP投稿URL]))`）
 - View の **対象テーブル・タイプ・Position・表示条件**
 - Bot/Automation 定義（このアプリでは未作成のため空）
+
+### Phase 4（Cookie 認証で書込み・実験的）
+
+| ツール | 概要 |
+|--------|------|
+| `appsheet_refresh_app_def` | Cookie 認証で `/api/loadApp` を叩き snapshot を直接更新（HAR 不要） |
+| `appsheet_set_column_flag` | 列のブールフラグを書換（IsHidden/Searchable/IsLabel/IsScannable/IsNfcScannable/IsSensitive/ResetOnEdit/IsRequired/DefEdit） |
+| `appsheet_set_column_type` | 列の Type を変更（Text↔LongText 等。安全リストで判定し外れる変換は warning） |
+| `appsheet_set_column_description` | 列の Description を更新 |
+
+#### Cookie の取得
+
+`/api/saveapp` は Application Access Key で認証されないため、ブラウザログインセッションの Cookie を流用する。
+
+1. AppSheet Editor を開く（Google ログイン状態）
+2. F12 → Network タブ → 任意の編集を 1 回行ってから Save
+3. `saveapp` リクエストを右クリック → Copy → **「Copy as cURL (bash)」**
+4. 結果を `samples/saveapp.curl.txt` に貼り付け
+5. cURL の `-b '...'` 部分を抽出して `.env` の `APPSHEET_COOKIE=...` に設定
+
+Cookie 有効期限は約 30 日。失効時は再取得が必要。
+
+#### 安全ガード
+
+書込み系ツールはすべて **デフォルト dry-run**（送信せず差分のみ返す）。実適用は引数 `apply: true` 必須。適用後は loadApp で再取得し、変更が反映されたか **事後検証** して結果を返す。
+
+#### 利用上の注意
+
+`/api/saveapp` は AppSheet Editor の内部 API であり、公式 API ではない。社内向け・自社アプリ向けの利用に限定し、外部 SaaS への組込み等は AppSheet 利用規約と照らし合わせて判断すること。仕様変更で予告なく動作しなくなる可能性がある。
 
 ## 動作確認
 
