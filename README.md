@@ -6,10 +6,10 @@ AppSheet を Claude Code から操作するための MCP サーバー（Model Co
 
 GCP / Salesforce / SQL は Claude Code から API 経由で操作できるが、AppSheet には公式の Metadata API が無いため手動作業が残る。本サーバーは：
 
-- **Phase 1**：AppSheet Application API v2（公式・データ CRUD）を MCP ツールとして提供
-- **Phase 2**：Google Sheets API + AppSheet Documentation 解析でテーブル構造・式・Action・Bot を取得
-- **Phase 3**：Documentation エクスポート自動化（Playwright）
-- **Phase 4**：Editor 直接操作で式更新・Action/Bot のトグル（実験的）
+- **Phase 1**：AppSheet Application API v2（公式・データ CRUD）を MCP ツールとして提供 ✅
+- **Phase 2**：AppSheet 内部 OpenAPI スナップショットからテーブル/列構造・型・enum を取得 ✅
+- **Phase 3**：Editor 直接操作で式・Action・Bot/Automation を取得（Playwright・予定）
+- **Phase 4**：Editor 直接操作で式更新・Action/Bot のトグル（実験的・予定）
 
 **プロジェクト非依存設計**。複数の AppSheet アプリを `.env` の追記だけで切り替えられる。
 
@@ -55,7 +55,9 @@ APPSHEET_ACCESS_KEY__<App ID>=V2-xxxxx-xxxxx
 }
 ```
 
-## 提供ツール（Phase 1）
+## 提供ツール
+
+### Phase 1（データ CRUD・公式 API v2 経由・安定）
 
 | ツール | 概要 |
 |--------|------|
@@ -64,6 +66,29 @@ APPSHEET_ACCESS_KEY__<App ID>=V2-xxxxx-xxxxx
 | `appsheet_edit_records` | 行更新（キー列必須） |
 | `appsheet_delete_records` | 行削除 |
 | `appsheet_invoke_action` | 任意 Action 実行 |
+
+### Phase 2（メタ情報・OpenAPI スナップショットベース）
+
+| ツール | 概要 |
+|--------|------|
+| `appsheet_load_spec` | スナップショット読み込み（`snapshots/openapi-<appId>.json` または `samples/openapi.json`） |
+| `appsheet_save_spec` | OpenAPI JSON 文字列を `snapshots/` に保存 |
+| `appsheet_get_app_overview` | アプリタイトル + テーブル一覧 + 各テーブルの操作・列数 |
+| `appsheet_get_tables` | 全テーブル名 + 操作リスト + 列数 |
+| `appsheet_get_columns` | 列名・型・format・enum・required（公式列のみ・仮想列/式は Phase 3） |
+| `appsheet_get_table_summary` | テーブルの操作 + 列定義を一括取得 |
+
+#### スナップショットの取得方法
+
+OpenAPI エンドポイントは Application Access Key では認証されず、ログイン中のブラウザセッションが必要。
+
+1. ブラウザで `https://www.appsheet.com/api/v2/apps/<App ID>/openapi.json` を開く
+2. 表示された JSON を `snapshots/openapi-<App ID>.json` として保存（または `samples/openapi.json`）
+3. MCP からは `appsheet_load_spec` で読込（パス指定省略時は規定パスを順に探索）
+
+#### 既知の制限
+
+**同名長テーブルのスキーマ衝突**：AppSheet の OpenAPI 生成は table 名のキャラクタ数が同じ場合にスキーマ ID が衝突し、片方しか出ない（例：`ログ` と `設定` はどちらも 2 文字なので一方が抜ける）。`appsheet_get_columns` は明示的にエラーを返し、回避策（`appsheet_find_records` で 1 行取得 → キー一覧から列名抽出）を案内する。
 
 ## 動作確認
 

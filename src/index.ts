@@ -15,6 +15,14 @@ import {
   deleteRecords,
   invokeAction,
 } from "./tools/data.js";
+import {
+  loadSpec,
+  saveSpec,
+  getTables,
+  getColumns,
+  getTableSummary,
+  getAppOverview,
+} from "./tools/spec.js";
 
 const tools: Tool[] = [
   {
@@ -89,6 +97,76 @@ const tools: Tool[] = [
       required: ["tableName", "actionName"],
     },
   },
+  {
+    name: "appsheet_load_spec",
+    description:
+      "OpenAPI スナップショット（snapshots/openapi-<appId>.json または samples/openapi.json）を読み込む。`path` を指定すれば任意のファイルを読める。最新化はブラウザで https://www.appsheet.com/api/v2/apps/<App ID>/openapi.json を開いて保存。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        path: { type: "string", description: "明示的な OpenAPI JSON ファイルパス" },
+      },
+    },
+  },
+  {
+    name: "appsheet_save_spec",
+    description:
+      "OpenAPI JSON 文字列を snapshots/openapi-<appId>.json に保存する。ブラウザで取得した内容を貼って渡せば永続化される。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        openapiJson: { type: "string", description: "OpenAPI JSON 全体（文字列）" },
+      },
+      required: ["openapiJson"],
+    },
+  },
+  {
+    name: "appsheet_get_app_overview",
+    description: "OpenAPI から取れる範囲のアプリ全体メタ（タイトル・テーブル一覧・列数・操作）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "appsheet_get_tables",
+    description: "OpenAPI に含まれる全テーブル名と利用可能な操作・列数を返す。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "appsheet_get_columns",
+    description:
+      "指定テーブルの列情報（名前・型・format・enum・required）を OpenAPI から返す。式や仮想列は含まれない（Phase 3 で Editor 経由予定）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tableName: { type: "string" },
+        appId: { type: "string" },
+      },
+      required: ["tableName"],
+    },
+  },
+  {
+    name: "appsheet_get_table_summary",
+    description: "テーブルの操作一覧 + 列定義を一括取得（get_columns + 操作リスト）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tableName: { type: "string" },
+        appId: { type: "string" },
+      },
+      required: ["tableName"],
+    },
+  },
 ];
 
 type ToolArgs = Record<string, unknown>;
@@ -105,6 +183,18 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return deleteRecords(args as Parameters<typeof deleteRecords>[0]);
     case "appsheet_invoke_action":
       return invokeAction(args as Parameters<typeof invokeAction>[0]);
+    case "appsheet_load_spec":
+      return loadSpec(args as Parameters<typeof loadSpec>[0]);
+    case "appsheet_save_spec":
+      return saveSpec(args as Parameters<typeof saveSpec>[0]);
+    case "appsheet_get_app_overview":
+      return getAppOverview(args as Parameters<typeof getAppOverview>[0]);
+    case "appsheet_get_tables":
+      return getTables(args as Parameters<typeof getTables>[0]);
+    case "appsheet_get_columns":
+      return getColumns(args as Parameters<typeof getColumns>[0]);
+    case "appsheet_get_table_summary":
+      return getTableSummary(args as Parameters<typeof getTableSummary>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }
