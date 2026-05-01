@@ -8,8 +8,8 @@ GCP / Salesforce / SQL は Claude Code から API 経由で操作できるが、
 
 - **Phase 1**：AppSheet Application API v2（公式・データ CRUD）を MCP ツールとして提供 ✅
 - **Phase 2**：AppSheet 内部 OpenAPI スナップショットからテーブル/列構造・型・enum を取得 ✅
-- **Phase 3**：Editor 直接操作で式・Action・Bot/Automation を取得（Playwright・予定）
-- **Phase 4**：Editor 直接操作で式更新・Action/Bot のトグル（実験的・予定）
+- **Phase 3**：HAR から loadApp レスポンスを抽出し、式・仮想列・Action・View を取得 ✅
+- **Phase 4**：Editor 直接操作で式更新・Action/Bot のトグル（Playwright・実験的・予定）
 
 **プロジェクト非依存設計**。複数の AppSheet アプリを `.env` の追記だけで切り替えられる。
 
@@ -89,6 +89,40 @@ OpenAPI エンドポイントは Application Access Key では認証されず、
 #### 既知の制限
 
 **同名長テーブルのスキーマ衝突**：AppSheet の OpenAPI 生成は table 名のキャラクタ数が同じ場合にスキーマ ID が衝突し、片方しか出ない（例：`ログ` と `設定` はどちらも 2 文字なので一方が抜ける）。`appsheet_get_columns` は明示的にエラーを返し、回避策（`appsheet_find_records` で 1 行取得 → キー一覧から列名抽出）を案内する。
+
+### Phase 3（アプリ定義フル取得・HAR スナップショットベース）
+
+| ツール | 概要 |
+|--------|------|
+| `appsheet_import_har` | DevTools で保存した HAR から loadApp レスポンスを抽出して `snapshots/appdef-<appId>.json` に保存 |
+| `appsheet_load_app_def` | appdef スナップショットを読込み、テーブル/Action/View/Bot 件数を返す |
+| `appsheet_get_app_metadata` | アプリ ID・タイトル・バージョン・テーブル一覧 |
+| `appsheet_get_full_columns` | 列の完全情報（型・式・初期値・仮想列・enum・各種フラグ） |
+| `appsheet_get_actions` | Action 一覧（条件式・値式付き） |
+| `appsheet_get_action_detail` | 指定 Action の生データ（評価ツリー含む） |
+| `appsheet_get_views` | View 一覧（対象テーブル・タイプ・Position・ShowIf） |
+| `appsheet_get_bots` | Bot/Automation 一覧 |
+
+#### HAR スナップショットの取得方法
+
+AppSheet Editor の `/api/loadApp/<App名>` レスポンスにアプリ定義丸ごと（48 トップレベルキー、Behavior/Presentation/AppData 配下に Action・Bot・View・Schema 全部）が JSON 文字列として入っている。これをブラウザ DevTools 経由で HAR として吸い出し、MCP がパースする方式。
+
+1. AppSheet Editor で対象アプリを開く
+2. **F12** で DevTools → **Network** タブ → 上部「Fetch/XHR」フィルター
+3. **F5** でリフレッシュ
+4. リクエスト一覧の空白部分を **右クリック → 「Save all as HAR with content」**
+5. 任意の場所に保存（例: `samples/editor.har`）
+6. MCP から `appsheet_import_har({ path: "samples/editor.har" })` を呼ぶ → スナップショット化
+
+スナップショットができれば、以降は `appsheet_get_full_columns` 等のクエリツールでアプリ定義を自由に参照できる。
+
+#### 取れる情報の例
+
+- 列の **App Formula / Initial Value**（例: ID 列の `=UNIQUEID()`）
+- **仮想列**（`isVirtual: true`）と通常列の区別
+- Action の **値式・条件式**（例: `[WP投稿URL]` / `NOT(ISBLANK([WP投稿URL]))`）
+- View の **対象テーブル・タイプ・Position・表示条件**
+- Bot/Automation 定義（このアプリでは未作成のため空）
 
 ## 動作確認
 

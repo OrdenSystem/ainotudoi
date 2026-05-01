@@ -23,6 +23,16 @@ import {
   getTableSummary,
   getAppOverview,
 } from "./tools/spec.js";
+import {
+  importHar,
+  loadAppDef,
+  getAppMetadata,
+  getFullColumns,
+  getActions,
+  getActionDetail,
+  getViews,
+  getBots,
+} from "./tools/appdef.js";
 
 const tools: Tool[] = [
   {
@@ -167,6 +177,98 @@ const tools: Tool[] = [
       required: ["tableName"],
     },
   },
+  {
+    name: "appsheet_import_har",
+    description:
+      "DevTools で保存した HAR ファイルから loadApp レスポンスを抽出して snapshots/appdef-<appId>.json に保存する。HAR 取得手順は AppSheet Editor で F12 → Network → 右クリック → Save all as HAR with content。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "HAR ファイルのパス（絶対 or cwd 相対）" },
+        appId: { type: "string" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "appsheet_load_app_def",
+    description: "snapshots/appdef-<appId>.json を読み込みキャッシュする。テーブル/Action/View/Bot 件数を返す。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        path: { type: "string", description: "明示的な appdef JSON ファイルパス" },
+      },
+    },
+  },
+  {
+    name: "appsheet_get_app_metadata",
+    description: "アプリのトップレベルメタ（タイトル・バージョン・テーブル名一覧）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "appsheet_get_full_columns",
+    description:
+      "appdef スナップショットから列の完全情報（型・式・初期値・仮想列・enum・各種フラグ）を取得する。Phase 2 の get_columns より詳細。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tableName: { type: "string" },
+        appId: { type: "string" },
+      },
+      required: ["tableName"],
+    },
+  },
+  {
+    name: "appsheet_get_actions",
+    description: "Action 一覧（名前・テーブル・条件式・値式・スコープ・アイコン）。table または name でフィルタ可。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        tableFilter: { type: "string", description: "対象テーブル名でフィルタ" },
+        nameContains: { type: "string", description: "Action 名に含まれる文字列" },
+      },
+    },
+  },
+  {
+    name: "appsheet_get_action_detail",
+    description: "指定 Action の生データを丸ごと返す（評価ツリー・ActionSettings・ActionDefinition 含む）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        appId: { type: "string" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "appsheet_get_views",
+    description: "View 一覧（名前・対象テーブル・タイプ・Position・ShowIf 条件）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        tableFilter: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "appsheet_get_bots",
+    description: "Bot/Automation 一覧（このアプリで未作成なら空配列）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+      },
+    },
+  },
 ];
 
 type ToolArgs = Record<string, unknown>;
@@ -195,6 +297,22 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return getColumns(args as Parameters<typeof getColumns>[0]);
     case "appsheet_get_table_summary":
       return getTableSummary(args as Parameters<typeof getTableSummary>[0]);
+    case "appsheet_import_har":
+      return importHar(args as Parameters<typeof importHar>[0]);
+    case "appsheet_load_app_def":
+      return loadAppDef(args as Parameters<typeof loadAppDef>[0]);
+    case "appsheet_get_app_metadata":
+      return getAppMetadata(args as Parameters<typeof getAppMetadata>[0]);
+    case "appsheet_get_full_columns":
+      return getFullColumns(args as Parameters<typeof getFullColumns>[0]);
+    case "appsheet_get_actions":
+      return getActions(args as Parameters<typeof getActions>[0]);
+    case "appsheet_get_action_detail":
+      return getActionDetail(args as Parameters<typeof getActionDetail>[0]);
+    case "appsheet_get_views":
+      return getViews(args as Parameters<typeof getViews>[0]);
+    case "appsheet_get_bots":
+      return getBots(args as Parameters<typeof getBots>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }
