@@ -1265,6 +1265,220 @@ export async function removeEnumValue(args: {
   return setEnumValues({ ...args, values: values.filter((v) => v !== args.value) });
 }
 
+export async function cloneTable(args: {
+  appId?: string;
+  appName?: string;
+  sourceTableName: string;
+  newTableName: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  source: string;
+  newTable: string;
+  cloned: { dataSet: boolean; schema: boolean; actions: number; views: string[] };
+  warning?: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown>;
+  const presentation = (app as Record<string, unknown>).Presentation as Record<string, unknown>;
+  const datasets = (appData.DataSets ?? []) as Array<Record<string, unknown>>;
+  const schemas = (appData.DataSchemas ?? []) as Array<Record<string, unknown>>;
+  const actions = (appData.DataActions ?? []) as Array<Record<string, unknown>>;
+  const controls = (presentation.Controls ?? []) as Array<Record<string, unknown>>;
+
+  // 衝突チェック
+  if (datasets.find((d) => d.Name === args.newTableName)) {
+    throw new Error(`DataSet '${args.newTableName}' は既に存在します`);
+  }
+  if (schemas.find((s) => s.Name === `${args.newTableName}_Schema`)) {
+    throw new Error(`DataSchema '${args.newTableName}_Schema' は既に存在します`);
+  }
+
+  const sourceDataSet = datasets.find((d) => d.Name === args.sourceTableName);
+  const sourceSchema = schemas.find((s) => s.AutoSchemaFrom === args.sourceTableName);
+  if (!sourceDataSet) throw new Error(`DataSet '${args.sourceTableName}' が見つかりません`);
+  if (!sourceSchema) throw new Error(`DataSchema for '${args.sourceTableName}' が見つかりません`);
+
+  const sourceActions = actions.filter((a) => a.Table === args.sourceTableName);
+  const sourceViews = controls.filter((c) => c.TableOrFolderName === args.sourceTableName);
+
+  // === DataSet クローン ===
+  const newDataSet = JSON.parse(JSON.stringify(sourceDataSet)) as Record<string, unknown>;
+  newDataSet.Name = args.newTableName;
+  newDataSet.ComponentId = generateComponentId();
+  newDataSet._isNew = true;
+  newDataSet._version = 0;
+  newDataSet._index = datasets.length;
+  newDataSet._path = `AppData.DataSets[${datasets.length}]`;
+  datasets.push(newDataSet);
+
+  // === DataSchema クローン ===
+  const newSchema = JSON.parse(JSON.stringify(sourceSchema)) as Record<string, unknown>;
+  newSchema.Name = `${args.newTableName}_Schema`;
+  newSchema.AutoSchemaFrom = args.newTableName;
+  newSchema.ComponentId = generateComponentId();
+  newSchema._isNew = true;
+  newSchema._version = 0;
+  newSchema._index = schemas.length;
+  newSchema._path = `AppData.DataSchemas[${schemas.length}]`;
+  // Attributes の各 ComponentId を再生成
+  const newAttrs = (newSchema.Attributes ?? []) as Array<Record<string, unknown>>;
+  for (const a of newAttrs) {
+    a.ComponentId = generateComponentId();
+  }
+  schemas.push(newSchema);
+
+  // === Actions クローン（Table 名のみ書換）===
+  let actionCount = 0;
+  for (const src of sourceActions) {
+    const clone = JSON.parse(JSON.stringify(src)) as Record<string, unknown>;
+    clone.Table = args.newTableName;
+    clone.ComponentId = generateComponentId();
+    clone._isNew = true;
+    clone._version = 0;
+    clone._index = actions.length;
+    clone._path = `AppData.DataActions[${actions.length}]`;
+    actions.push(clone);
+    actionCount++;
+  }
+
+  // === Views クローン（Name と TableOrFolderName 書換）===
+  const viewNamesAdded: string[] = [];
+  for (const src of sourceViews) {
+    const clone = JSON.parse(JSON.stringify(src)) as Record<string, unknown>;
+    const oldName = src.Name as string;
+    let newName: string;
+    if (oldName === args.sourceTableName) {
+      newName = args.newTableName;
+    } else if (oldName.startsWith(`${args.sourceTableName}_`)) {
+      newName = `${args.newTableName}_${oldName.slice(args.sourceTableName.length + 1)}`;
+    } else {
+      newName = `${args.newTableName} ${oldName}`;
+    }
+    // 衝突回避
+    if (controls.find((c) => c.Name === newName) || viewNamesAdded.includes(newName)) {
+      newName = `${newName}_${Math.random().toString(36).slice(2, 7)}`;
+    }
+    clone.Name = newName;
+    clone.TableOrFolderName = args.newTableName;
+    clone.ComponentId = generateComponentId();
+    clone._isNew = true;
+    clone._version = 0;
+    clone._index = controls.length;
+    clone._path = `Presentation.Controls[${controls.length}]`;
+    controls.push(clone);
+    viewNamesAdded.push(newName);
+  }
+
+  const warning = "DataSet.Source は元のシートを参照したまま。物理シートを別にしたい場合は AppSheet Editor で個別に変更してください。";
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      source: args.sourceTableName,
+      newTable: args.newTableName,
+      cloned: { dataSet: true, schema: true, actions: actionCount, views: viewNamesAdded },
+      warning,
+      message: `dry-run。DataSet + Schema(${newAttrs.length} cols) + Actions(${actionCount}) + Views(${viewNamesAdded.length}) を構築済み。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedDatasets = (((refreshed as Record<string, unknown>).AppData as Record<string, unknown>).DataSets ?? []) as Array<Record<string, unknown>>;
+  const created = refreshedDatasets.find((d) => d.Name === args.newTableName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    source: args.sourceTableName,
+    newTable: args.newTableName,
+    cloned: { dataSet: true, schema: true, actions: actionCount, views: viewNamesAdded },
+    warning,
+    message: created
+      ? `✅ Table '${args.newTableName}' をクローン作成完了（DataSet/Schema/Actions x${actionCount}/Views x${viewNamesAdded.length}）`
+      : `⚠️ saveapp は Success だが事後検証で DataSet が見当たらない`,
+  };
+}
+
+export async function removeTable(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  tableName: string;
+  removed: { dataSet: boolean; schema: boolean; actions: number; views: number };
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown>;
+  const presentation = (app as Record<string, unknown>).Presentation as Record<string, unknown>;
+  const datasets = (appData.DataSets ?? []) as Array<Record<string, unknown>>;
+  const schemas = (appData.DataSchemas ?? []) as Array<Record<string, unknown>>;
+  const actions = (appData.DataActions ?? []) as Array<Record<string, unknown>>;
+  const controls = (presentation.Controls ?? []) as Array<Record<string, unknown>>;
+
+  const dsIdx = datasets.findIndex((d) => d.Name === args.tableName);
+  if (dsIdx < 0) throw new Error(`DataSet '${args.tableName}' が見つかりません`);
+
+  const removed = { dataSet: false, schema: false, actions: 0, views: 0 };
+  datasets.splice(dsIdx, 1);
+  removed.dataSet = true;
+  const schIdx = schemas.findIndex((s) => s.AutoSchemaFrom === args.tableName);
+  if (schIdx >= 0) {
+    schemas.splice(schIdx, 1);
+    removed.schema = true;
+  }
+  for (let i = actions.length - 1; i >= 0; i--) {
+    if (actions[i].Table === args.tableName) {
+      actions.splice(i, 1);
+      removed.actions++;
+    }
+  }
+  for (let i = controls.length - 1; i >= 0; i--) {
+    if (controls[i].TableOrFolderName === args.tableName) {
+      controls.splice(i, 1);
+      removed.views++;
+    }
+  }
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      tableName: args.tableName,
+      removed,
+      message: `dry-run。DataSet + Schema + Actions(${removed.actions}) + Views(${removed.views}) を削除予定。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedDS = (((refreshed as Record<string, unknown>).AppData as Record<string, unknown>).DataSets ?? []) as Array<Record<string, unknown>>;
+  const stillThere = refreshedDS.find((d) => d.Name === args.tableName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return {
+    dryRun: false,
+    applied: !stillThere,
+    tableName: args.tableName,
+    removed,
+    message: stillThere
+      ? "⚠️ saveapp は Success だが Table がまだ存在する"
+      : `✅ Table '${args.tableName}' とその全関連エンティティを削除完了`,
+  };
+}
+
 export async function setColumnDescription(args: {
   appId?: string;
   appName?: string;

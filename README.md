@@ -140,6 +140,14 @@ AppSheet Editor の `/api/loadApp/<App名>` レスポンスにアプリ定義丸
 | `appsheet_remove_action` | Action を削除（System Action は推奨せず） |
 | `appsheet_clone_bot` | 既存 Bot をクローン（Bot + Event + Process + Tasks の 4 配列まとめて再生成） |
 | `appsheet_remove_bot` | Bot とそれに紐づく Event / Process / Tasks を一括削除 |
+| `appsheet_set_column_formula` | 列の AppFormula / Initial Value 式を更新 |
+| `appsheet_set_action_condition` | Action の Condition（実行可否条件）を更新 |
+| `appsheet_set_action_value` | Action の Value（操作対象値）式を更新 |
+| `appsheet_set_enum_values` | Enum/EnumList 列の選択肢を一括置換（TypeAuxData.EnumValues） |
+| `appsheet_add_enum_value` | Enum/EnumList 列に選択肢を 1 つ追加 |
+| `appsheet_remove_enum_value` | Enum/EnumList 列から選択肢を 1 つ削除 |
+| `appsheet_clone_table` | テーブル丸ごとクローン（DataSet + Schema + Actions + Views 一括） |
+| `appsheet_remove_table` | テーブルとその全関連エンティティを一括削除 |
 
 #### Cookie の取得
 

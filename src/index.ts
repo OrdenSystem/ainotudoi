@@ -52,6 +52,8 @@ import {
   setEnumValues,
   addEnumValue,
   removeEnumValue,
+  cloneTable,
+  removeTable,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -428,6 +430,36 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_clone_table",
+    description:
+      "テーブル丸ごとクローン作成。DataSet + DataSchema(全カラム) + 関連 Action 全部 + 関連 View 全部を一括コピーし、ComponentId 再生成。注意: DataSet.Source は元シートを参照したまま（必要なら別途編集）。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        sourceTableName: { type: "string" },
+        newTableName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["sourceTableName", "newTableName"],
+    },
+  },
+  {
+    name: "appsheet_remove_table",
+    description: "テーブルを削除（紐づく DataSet/Schema/Actions/Views を一括削除）。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName"],
+    },
+  },
+  {
     name: "appsheet_set_column_formula",
     description:
       "列の AppFormula（仮想列の式）または Initial Value を更新。先頭 = は省略可。InternalQualifier の式木は再パース用にクリアする。デフォルト dry-run。",
@@ -662,6 +694,10 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addEnumValue(args as Parameters<typeof addEnumValue>[0]);
     case "appsheet_remove_enum_value":
       return removeEnumValue(args as Parameters<typeof removeEnumValue>[0]);
+    case "appsheet_clone_table":
+      return cloneTable(args as Parameters<typeof cloneTable>[0]);
+    case "appsheet_remove_table":
+      return removeTable(args as Parameters<typeof removeTable>[0]);
     case "appsheet_set_column_description":
       return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
     default:
