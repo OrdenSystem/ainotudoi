@@ -452,6 +452,212 @@ export async function addVirtualColumn(args: {
   };
 }
 
+export async function cloneView(args: {
+  appId?: string;
+  appName?: string;
+  sourceViewName: string;
+  newViewName: string;
+  targetTable?: string;
+  position?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  source: string;
+  newView: string;
+  table?: string;
+  componentId?: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const controls = ((app as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  if (!controls) throw new Error("Presentation.Controls が見つかりません");
+
+  const source = controls.find((c) => c.Name === args.sourceViewName);
+  if (!source) {
+    const known = controls.map((c) => c.Name).join(", ");
+    throw new Error(`元の View '${args.sourceViewName}' が見つかりません。既知: ${known}`);
+  }
+  if (controls.find((c) => c.Name === args.newViewName)) {
+    throw new Error(`View '${args.newViewName}' は既に存在します`);
+  }
+
+  const clone = JSON.parse(JSON.stringify(source)) as Record<string, unknown>;
+  clone.Name = args.newViewName;
+  if (args.targetTable) clone.TableOrFolderName = args.targetTable;
+  if (args.position) clone.Position = args.position;
+  clone.ComponentId = generateComponentId();
+  clone._isNew = true;
+  clone._version = 0;
+  clone._index = controls.length;
+  clone._path = `Presentation.Controls[${controls.length}]`;
+  controls.push(clone);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      source: args.sourceViewName,
+      newView: args.newViewName,
+      table: args.targetTable ?? (source.TableOrFolderName as string | undefined),
+      message: `dry-run。'${args.sourceViewName}' をクローンして '${args.newViewName}' を作るペイロード構築済み。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedControls = ((refreshed as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  const created = refreshedControls?.find((c) => c.Name === args.newViewName) as Record<string, unknown> | undefined;
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    source: args.sourceViewName,
+    newView: args.newViewName,
+    table: created?.TableOrFolderName as string | undefined,
+    componentId: created?.ComponentId as string,
+    message: created
+      ? `✅ View '${args.newViewName}' を '${args.sourceViewName}' からクローン作成完了`
+      : `⚠️ saveapp は Success だが事後検証で View が見当たらない`,
+  };
+}
+
+export async function cloneAction(args: {
+  appId?: string;
+  appName?: string;
+  sourceActionName: string;
+  newActionName: string;
+  targetTable?: string;
+  targetColumn?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  source: string;
+  newAction: string;
+  table?: string;
+  componentId?: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const actions = ((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+  if (!actions) throw new Error("AppData.DataActions が見つかりません");
+
+  const source = actions.find((a) => a.Name === args.sourceActionName);
+  if (!source) {
+    const known = actions.slice(0, 10).map((a) => a.Name).join(", ");
+    throw new Error(`元の Action '${args.sourceActionName}' が見つかりません。既知（先頭 10 件）: ${known}`);
+  }
+  if (actions.find((a) => a.Name === args.newActionName)) {
+    throw new Error(`Action '${args.newActionName}' は既に存在します`);
+  }
+
+  const clone = JSON.parse(JSON.stringify(source)) as Record<string, unknown>;
+  clone.Name = args.newActionName;
+  if (args.targetTable) clone.Table = args.targetTable;
+  if (args.targetColumn !== undefined) clone.ColumnToEdit = args.targetColumn;
+  clone.ComponentId = generateComponentId();
+  clone._isNew = true;
+  clone._version = 0;
+  clone._index = actions.length;
+  clone._path = `AppData.DataActions[${actions.length}]`;
+  actions.push(clone);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      source: args.sourceActionName,
+      newAction: args.newActionName,
+      table: args.targetTable ?? (source.Table as string | undefined),
+      message: `dry-run。'${args.sourceActionName}' をクローンして '${args.newActionName}' を作るペイロード構築済み。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedActions = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+  const created = refreshedActions?.find((a) => a.Name === args.newActionName) as Record<string, unknown> | undefined;
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    source: args.sourceActionName,
+    newAction: args.newActionName,
+    table: created?.Table as string | undefined,
+    componentId: created?.ComponentId as string,
+    message: created
+      ? `✅ Action '${args.newActionName}' を '${args.sourceActionName}' からクローン作成完了`
+      : `⚠️ saveapp は Success だが事後検証で Action が見当たらない`,
+  };
+}
+
+export async function removeView(args: {
+  appId?: string;
+  appName?: string;
+  viewName: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; viewName: string; message: string }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const controls = ((app as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  if (!controls) throw new Error("Controls 不明");
+  const idx = controls.findIndex((c) => c.Name === args.viewName);
+  if (idx < 0) throw new Error(`View '${args.viewName}' が見つかりません`);
+  controls.splice(idx, 1);
+
+  if (!args.apply) return { dryRun: true, applied: false, viewName: args.viewName, message: "dry-run" };
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedControls = ((refreshed as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  const stillThere = refreshedControls?.find((c) => c.Name === args.viewName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return {
+    dryRun: false,
+    applied: !stillThere,
+    viewName: args.viewName,
+    message: stillThere ? "⚠️ 削除拒否された可能性" : `✅ View '${args.viewName}' 削除完了`,
+  };
+}
+
+export async function removeAction(args: {
+  appId?: string;
+  appName?: string;
+  actionName: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; actionName: string; message: string }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const actions = ((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+  if (!actions) throw new Error("DataActions 不明");
+  const idx = actions.findIndex((a) => a.Name === args.actionName);
+  if (idx < 0) throw new Error(`Action '${args.actionName}' が見つかりません`);
+  actions.splice(idx, 1);
+
+  if (!args.apply) return { dryRun: true, applied: false, actionName: args.actionName, message: "dry-run" };
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedActions = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+  const stillThere = refreshedActions?.find((a) => a.Name === args.actionName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return {
+    dryRun: false,
+    applied: !stillThere,
+    actionName: args.actionName,
+    message: stillThere ? "⚠️ 削除拒否された可能性" : `✅ Action '${args.actionName}' 削除完了`,
+  };
+}
+
 export async function removeColumn(args: {
   appId?: string;
   appName?: string;

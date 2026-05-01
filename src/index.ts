@@ -40,6 +40,10 @@ import {
   setColumnType,
   addVirtualColumn,
   removeColumn,
+  cloneView,
+  cloneAction,
+  removeView,
+  removeAction,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -350,6 +354,70 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_clone_view",
+    description:
+      "既存 View をクローンして新規 View を作成（名前・対象テーブル・Position を置換可）。Capture-and-Replay 安全パターン。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        sourceViewName: { type: "string", description: "コピー元の View 名（例: 記事管理_Detail）" },
+        newViewName: { type: "string" },
+        targetTable: { type: "string", description: "対象テーブル変更時に指定" },
+        position: { type: "string", description: "center / left / right / ref / menu" },
+        apply: { type: "boolean" },
+      },
+      required: ["sourceViewName", "newViewName"],
+    },
+  },
+  {
+    name: "appsheet_clone_action",
+    description:
+      "既存 Action をクローンして新規 Action を作成（名前・対象テーブル・列を置換可）。式は基本コピー元のままなので、後で setColumnFlag 系や直接修正で式を変更する想定。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        sourceActionName: { type: "string", description: "コピー元の Action 名" },
+        newActionName: { type: "string" },
+        targetTable: { type: "string" },
+        targetColumn: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["sourceActionName", "newActionName"],
+    },
+  },
+  {
+    name: "appsheet_remove_view",
+    description: "View を削除する。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        viewName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["viewName"],
+    },
+  },
+  {
+    name: "appsheet_remove_action",
+    description: "Action を削除する。System Action（Add/Edit/Delete）の削除は推奨されない。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        actionName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["actionName"],
+    },
+  },
+  {
     name: "appsheet_remove_column",
     description:
       "テーブルから列を削除。バーチャル列は安全。実列の削除はデータソース側に影響しないが AppSheet 上の参照（Action/View/Slice）が壊れる可能性。キー列は推奨されない。デフォルト dry-run。",
@@ -436,6 +504,14 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addVirtualColumn(args as Parameters<typeof addVirtualColumn>[0]);
     case "appsheet_remove_column":
       return removeColumn(args as Parameters<typeof removeColumn>[0]);
+    case "appsheet_clone_view":
+      return cloneView(args as Parameters<typeof cloneView>[0]);
+    case "appsheet_clone_action":
+      return cloneAction(args as Parameters<typeof cloneAction>[0]);
+    case "appsheet_remove_view":
+      return removeView(args as Parameters<typeof removeView>[0]);
+    case "appsheet_remove_action":
+      return removeAction(args as Parameters<typeof removeAction>[0]);
     case "appsheet_set_column_description":
       return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
     default:

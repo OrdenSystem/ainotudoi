@@ -134,6 +134,10 @@ AppSheet Editor の `/api/loadApp/<App名>` レスポンスにアプリ定義丸
 | `appsheet_set_column_description` | 列の Description を更新 |
 | `appsheet_add_virtual_column` | 新規バーチャル列を追加（AppFormula 必須・型指定可・dry-run/apply） |
 | `appsheet_remove_column` | 列を削除（バーチャル列は安全・実列は AppSheet 側のみ削除） |
+| `appsheet_clone_view` | 既存 View をクローンして新規 View 作成（Name/Table/Position 置換可） |
+| `appsheet_clone_action` | 既存 Action をクローンして新規 Action 作成（Name/Table/ColumnToEdit 置換可） |
+| `appsheet_remove_view` | View を削除 |
+| `appsheet_remove_action` | Action を削除（System Action は推奨せず） |
 
 #### Cookie の取得
 
