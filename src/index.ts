@@ -38,6 +38,7 @@ import {
   setColumnFlag,
   setColumnDescription,
   setColumnType,
+  setColumnFormula,
   addVirtualColumn,
   removeColumn,
   cloneView,
@@ -46,6 +47,11 @@ import {
   removeAction,
   cloneBot,
   removeBot,
+  setActionCondition,
+  setActionValue,
+  setEnumValues,
+  addEnumValue,
+  removeEnumValue,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -422,6 +428,102 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_set_column_formula",
+    description:
+      "列の AppFormula（仮想列の式）または Initial Value を更新。先頭 = は省略可。InternalQualifier の式木は再パース用にクリアする。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string" },
+        kind: { type: "string", enum: ["AppFormula", "InitialValue"] },
+        formula: { type: "string", description: "AppSheet 式。例: '[テーマ] & \" - \" & [カテゴリ]'" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "kind", "formula"],
+    },
+  },
+  {
+    name: "appsheet_set_action_condition",
+    description: "Action の Condition（実行可否の条件式）を更新。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        actionName: { type: "string" },
+        condition: { type: "string", description: "AppSheet 式。例: 'NOT(ISBLANK([WP投稿URL]))'" },
+        apply: { type: "boolean" },
+      },
+      required: ["actionName", "condition"],
+    },
+  },
+  {
+    name: "appsheet_set_action_value",
+    description: "Action の Value（操作対象値の式）を更新。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        actionName: { type: "string" },
+        value: { type: "string", description: "AppSheet 式" },
+        apply: { type: "boolean" },
+      },
+      required: ["actionName", "value"],
+    },
+  },
+  {
+    name: "appsheet_set_enum_values",
+    description: "Enum / EnumList 型の列の選択肢を一括置換。TypeAuxData.Values 配列を更新。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string" },
+        values: { type: "array", items: { type: "string" } },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "values"],
+    },
+  },
+  {
+    name: "appsheet_add_enum_value",
+    description: "Enum / EnumList 列に選択肢を 1 つ追加（既存値は維持）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string" },
+        value: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "value"],
+    },
+  },
+  {
+    name: "appsheet_remove_enum_value",
+    description: "Enum / EnumList 列から選択肢を 1 つ削除。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string" },
+        value: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "value"],
+    },
+  },
+  {
     name: "appsheet_remove_bot",
     description: "Bot を削除（紐づく Event / Process / Tasks も自動的に削除）。デフォルト dry-run。",
     inputSchema: {
@@ -548,6 +650,18 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return cloneBot(args as Parameters<typeof cloneBot>[0]);
     case "appsheet_remove_bot":
       return removeBot(args as Parameters<typeof removeBot>[0]);
+    case "appsheet_set_column_formula":
+      return setColumnFormula(args as Parameters<typeof setColumnFormula>[0]);
+    case "appsheet_set_action_condition":
+      return setActionCondition(args as Parameters<typeof setActionCondition>[0]);
+    case "appsheet_set_action_value":
+      return setActionValue(args as Parameters<typeof setActionValue>[0]);
+    case "appsheet_set_enum_values":
+      return setEnumValues(args as Parameters<typeof setEnumValues>[0]);
+    case "appsheet_add_enum_value":
+      return addEnumValue(args as Parameters<typeof addEnumValue>[0]);
+    case "appsheet_remove_enum_value":
+      return removeEnumValue(args as Parameters<typeof removeEnumValue>[0]);
     case "appsheet_set_column_description":
       return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
     default:

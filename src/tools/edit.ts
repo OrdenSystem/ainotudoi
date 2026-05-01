@@ -959,6 +959,312 @@ export async function removeColumn(args: {
   };
 }
 
+interface Evaluatable {
+  SourceExpr?: string;
+}
+
+function extractEvalSource(e: unknown): string | null {
+  if (!e || typeof e !== "object") return null;
+  const ev = e as Evaluatable;
+  return ev.SourceExpr ?? null;
+}
+
+function normalizeFormula(formula: string): string {
+  return formula.startsWith("=") ? formula : "=" + formula;
+}
+
+export async function setColumnFormula(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  kind: "AppFormula" | "InitialValue";
+  formula: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  table: string;
+  column: string;
+  kind: string;
+  before: string | null;
+  requested: string;
+  after?: string | null;
+  verified?: boolean;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const attr = findAttribute(app, args.tableName, args.columnName);
+  const newFormula = normalizeFormula(args.formula);
+
+  let before: string | null;
+  if (args.kind === "AppFormula") {
+    before = (attr.AppFormula ?? null) as string | null;
+    attr.AppFormula = newFormula;
+    // InternalQualifier.AppFormulaExpression を消去して再パースさせる
+    if (attr.InternalQualifier && typeof attr.InternalQualifier === "object") {
+      const iq = attr.InternalQualifier as Record<string, unknown>;
+      delete iq.AppFormulaExpression;
+    }
+  } else {
+    before = (attr.Default ?? null) as string | null;
+    attr.Default = newFormula;
+    if (attr.InternalQualifier && typeof attr.InternalQualifier === "object") {
+      const iq = attr.InternalQualifier as Record<string, unknown>;
+      delete iq.DefaultExpression;
+    }
+  }
+
+  if (before === newFormula) {
+    return {
+      dryRun: !args.apply,
+      applied: false,
+      table: args.tableName,
+      column: args.columnName,
+      kind: args.kind,
+      before,
+      requested: newFormula,
+      message: "変更不要（既に同じ式）",
+    };
+  }
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      table: args.tableName,
+      column: args.columnName,
+      kind: args.kind,
+      before,
+      requested: newFormula,
+      message: "dry-run。apply: true で送信。",
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
+  const after = (args.kind === "AppFormula" ? refreshedAttr.AppFormula : refreshedAttr.Default) as string | null;
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: true,
+    table: args.tableName,
+    column: args.columnName,
+    kind: args.kind,
+    before,
+    requested: newFormula,
+    after,
+    verified: after === newFormula,
+    message: after === newFormula ? "✅ 式更新完了・検証 OK" : `⚠️ 期待 '${newFormula}' だが現在 '${after}'`,
+  };
+}
+
+export async function setActionCondition(args: {
+  appId?: string;
+  appName?: string;
+  actionName: string;
+  condition: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  actionName: string;
+  before: string | null;
+  requested: string;
+  after?: string | null;
+  verified?: boolean;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const actions = ((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+  if (!actions) throw new Error("DataActions 不明");
+  const action = actions.find((a) => a.Name === args.actionName);
+  if (!action) throw new Error(`Action '${args.actionName}' が見つかりません`);
+  const newCond = normalizeFormula(args.condition);
+  const before = (action.Condition ?? extractEvalSource(action.ConditionEvaluatable as Evaluatable | null | undefined)) as string | null;
+
+  action.Condition = newCond;
+  action.ConditionEvaluatable = null; // 再パースを促す
+
+  if (before === newCond) {
+    return { dryRun: !args.apply, applied: false, actionName: args.actionName, before, requested: newCond, message: "変更不要" };
+  }
+  if (!args.apply) {
+    return { dryRun: true, applied: false, actionName: args.actionName, before, requested: newCond, message: "dry-run" };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedAction = (((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined)?.find((a) => a.Name === args.actionName);
+  const after = (refreshedAction?.Condition ?? extractEvalSource(refreshedAction?.ConditionEvaluatable as Evaluatable | null | undefined)) as string | null;
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return {
+    dryRun: false,
+    applied: true,
+    actionName: args.actionName,
+    before,
+    requested: newCond,
+    after,
+    verified: after === newCond,
+    message: after === newCond ? "✅ 条件式更新完了" : `⚠️ 期待 '${newCond}' だが現在 '${after}'`,
+  };
+}
+
+export async function setActionValue(args: {
+  appId?: string;
+  appName?: string;
+  actionName: string;
+  value: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  actionName: string;
+  before: string | null;
+  requested: string;
+  after?: string | null;
+  verified?: boolean;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const actions = ((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+  if (!actions) throw new Error("DataActions 不明");
+  const action = actions.find((a) => a.Name === args.actionName);
+  if (!action) throw new Error(`Action '${args.actionName}' が見つかりません`);
+  const newVal = normalizeFormula(args.value);
+  const before = (action.Value ?? extractEvalSource(action.ValueEvaluatable as Evaluatable | null | undefined)) as string | null;
+
+  action.Value = newVal;
+  action.ValueEvaluatable = null;
+
+  if (before === newVal) {
+    return { dryRun: !args.apply, applied: false, actionName: args.actionName, before, requested: newVal, message: "変更不要" };
+  }
+  if (!args.apply) {
+    return { dryRun: true, applied: false, actionName: args.actionName, before, requested: newVal, message: "dry-run" };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedAction = (((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined)?.find((a) => a.Name === args.actionName);
+  const after = (refreshedAction?.Value ?? extractEvalSource(refreshedAction?.ValueEvaluatable as Evaluatable | null | undefined)) as string | null;
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return {
+    dryRun: false,
+    applied: true,
+    actionName: args.actionName,
+    before,
+    requested: newVal,
+    after,
+    verified: after === newVal,
+    message: after === newVal ? "✅ 値式更新完了" : `⚠️ 期待 '${newVal}' だが現在 '${after}'`,
+  };
+}
+
+export async function setEnumValues(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  values: string[];
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  table: string;
+  column: string;
+  before?: string[];
+  requested: string[];
+  after?: string[];
+  verified?: boolean;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const attr = findAttribute(app, args.tableName, args.columnName);
+  const type = attr.Type as string;
+  if (type !== "Enum" && type !== "EnumList") {
+    throw new Error(`列 '${args.columnName}' の型は ${type}。Enum / EnumList のみ対応`);
+  }
+  const auxStr = attr.TypeAuxData as string;
+  const aux = auxStr ? JSON.parse(auxStr) : {};
+  const before = (aux.EnumValues ?? aux.Values ?? []) as string[];
+  aux.EnumValues = args.values;
+  attr.TypeAuxData = JSON.stringify(aux);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, table: args.tableName, column: args.columnName, before, requested: args.values, message: "dry-run" };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
+  const refreshedAux = refreshedAttr.TypeAuxData ? JSON.parse(refreshedAttr.TypeAuxData as string) : {};
+  const after = (refreshedAux.EnumValues ?? refreshedAux.Values ?? []) as string[];
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  const verified = JSON.stringify(after) === JSON.stringify(args.values);
+  return {
+    dryRun: false,
+    applied: true,
+    table: args.tableName,
+    column: args.columnName,
+    before,
+    requested: args.values,
+    after,
+    verified,
+    message: verified ? "✅ Enum 値更新完了" : `⚠️ 期待 [${args.values.join(",")}] だが現在 [${after.join(",")}]`,
+  };
+}
+
+export async function addEnumValue(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  value: string;
+  apply?: boolean;
+}): Promise<unknown> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const attr = findAttribute(app, args.tableName, args.columnName);
+  const aux = attr.TypeAuxData ? JSON.parse(attr.TypeAuxData as string) : {};
+  const values = (aux.EnumValues ?? aux.Values ?? []) as string[];
+  if (values.includes(args.value)) {
+    return { applied: false, message: "既に存在", values };
+  }
+  return setEnumValues({ ...args, values: [...values, args.value] });
+}
+
+export async function removeEnumValue(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  value: string;
+  apply?: boolean;
+}): Promise<unknown> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const attr = findAttribute(app, args.tableName, args.columnName);
+  const aux = attr.TypeAuxData ? JSON.parse(attr.TypeAuxData as string) : {};
+  const values = (aux.EnumValues ?? aux.Values ?? []) as string[];
+  if (!values.includes(args.value)) {
+    return { applied: false, message: "存在しない", values };
+  }
+  return setEnumValues({ ...args, values: values.filter((v) => v !== args.value) });
+}
+
 export async function setColumnDescription(args: {
   appId?: string;
   appName?: string;
