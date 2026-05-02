@@ -60,6 +60,7 @@ import {
   createBot,
   addSlice,
   removeSlice,
+  addCallScriptTask,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -623,6 +624,43 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_call_script_task",
+    description:
+      "AppsScript Task (Call a Script) を新規追加し、指定 Process の Nodes に呼出ノードを連結する。GAS 関数呼出 + 戻り値受取の構造を一括構築。戻り値は LongText 1 個で、Process 内では [<stepName>].[Output] で参照可能。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        processName: { type: "string", description: "Task ノードを追加する対象 Process 名" },
+        taskName: { type: "string", description: "Task 名（アプリ内一意）" },
+        scriptId: { type: "string", description: "GAS スクリプト ID。'DocId=...' 形式" },
+        functionName: { type: "string", description: "呼出す GAS 関数名" },
+        functionArguments: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              expression: { type: "string", description: "AppSheet 式。例: '記事管理[ID]'" },
+            },
+            required: ["name", "expression"],
+          },
+          description: "GAS 関数のパラメータ。各要素 {name, expression}",
+        },
+        tableName: { type: "string", description: "Task のスコープ対象テーブル" },
+        stepName: {
+          type: "string",
+          description: "Process 内での Step 表示名。省略時は taskName。戻り値参照は [<stepName>].[Output]",
+        },
+        asyncExec: { type: "boolean", description: "非同期実行。デフォルト false" },
+        forEntireTable: { type: "boolean", description: "テーブル全体に対して 1 回実行。デフォルト true" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "scriptId", "functionName", "tableName"],
+    },
+  },
+  {
     name: "appsheet_add_slice",
     description:
       "Slice (TableSlice) を新規追加する。クライアント側でフィルタ評価・列順カスタムができる。データ秘匿には使えない（→ Security Filter）。デフォルト dry-run。",
@@ -873,6 +911,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addSlice(args as Parameters<typeof addSlice>[0]);
     case "appsheet_remove_slice":
       return removeSlice(args as Parameters<typeof removeSlice>[0]);
+    case "appsheet_add_call_script_task":
+      return addCallScriptTask(args as Parameters<typeof addCallScriptTask>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }
