@@ -499,27 +499,33 @@ Bot 処理末尾でフラグを FALSE に戻す（best-practices.md §Schedule v
 | `Scope` | スコープ |
 | `ActionDefinition` | 一部 Action 種別の追加定義 |
 
-**ActionType の主要種別**：
+**ActionType の主要種別**（saveapp で使う**正式名は大文字スネーク**）：
 
-| ActionType | 用途 | Value の意味 |
-|-----------|------|------------|
-| `Data: set the values of some columns in this row` | 列を編集 | 編集後の値式 |
-| `Data: add a new row to another table using values from this row` | 別テーブルに行追加 | 追加対象行の値式 |
-| `Data: delete this row` | 削除 | - |
-| `Data: execute an action on a set of rows` | 一括 Action | 対象行のリスト式 + 子 Action 名 |
-| `App: open a form to edit this row` | 編集フォーム起動 | View 名 |
-| `App: open a form to add a new row to this table` | 追加フォーム起動 | View 名 |
-| `App: go to another view within this app` | 別 View へ遷移 | View 名式 |
-| `App: go to another AppSheet app` | 別アプリへ遷移 | アプリ URL |
-| `App: copy this row and edit the copy` | 複製編集 | - |
-| `App: import a CSV file for this view` | CSV インポート | View 名 |
-| `App: open a URL` | **OpenUrl（外部 URL 起動）** | URL 式（HTTPS 推奨） |
-| `App: send an email` | メール作成 | To/Subject/Body 等の構造体 |
-| `App: send a SMS message` | SMS | To/Body |
-| `App: phone the contact` | 電話発信 | 電話番号式 |
-| `App: external service: Call a webhook` | Webhook 呼出 | URL/Method/Body |
-| `App: text a notification` | プッシュ通知 | - |
-| `Grouped: execute a sequence of actions` | 複数 Action 連結 | 子 Action 名のリスト |
+| 正式 ActionType | 用途 | Value の意味 |
+|----------------|------|------------|
+| `SET_COLUMN_VALUE` | 列を編集（複数列同時可） | `ActionSettings.Assignments[]` で `{ColumnToEdit, NewColumnValue}` 配列 |
+| `ADD_RECORD_TO` | 別テーブルに行追加 | 追加対象行の値式 |
+| `DELETE_RECORD` | 削除 | - |
+| `REF_ACTION` | 一括 Action（行集合に対する Action 実行） | 対象行のリスト式 + 子 Action 名 |
+| `EDIT_RECORD` | 編集フォーム起動 | View 名 |
+| `ADD_RECORD` | 追加フォーム起動 | View 名 |
+| `NAVIGATE_APP` | 別 View へ遷移（アプリ内最頻出 Action） | View 名式 |
+| `NAVIGATE_DIFFERENT_APP` | 別 AppSheet アプリへ遷移 | アプリ URL |
+| `COPY_EDIT_ROW` | 複製編集 | - |
+| `IMPORT_FILE` | CSV インポート | View 名 |
+| `NAVIGATE_URL` | **OpenUrl（外部 URL 起動）** | URL 式（HTTPS 推奨） |
+| `EMAIL` | メール作成 | To/Subject/Body 等の構造体 |
+| `SMS` | SMS | To/Body |
+| `CALL` | 電話発信 | 電話番号式 |
+| `OPEN_FILE` | ファイルを開く | ファイル URL 式 |
+| `EXPORT_VIEW` | View エクスポート | View 名 |
+| `COMPOSITE` | 複数 Action 連結（Grouped） | 子 Action 名のリスト |
+
+**実プロジェクトでの使用頻度**（72 テーブルの本番アプリ・Action 290 件で計測）:
+
+`NAVIGATE_APP` (76) > `EDIT_RECORD` (35) > `SET_COLUMN_VALUE` (34) > `ADD_RECORD` (30) > `DELETE_RECORD` / `NAVIGATE_URL` (24) > `CALL` / `SMS` (16) > `EMAIL` (10) > 他
+
+→ View 遷移系 (`NAVIGATE_APP`) と CRUD 系で 7 割超。**初期構築では NAVIGATE_APP / SET_COLUMN_VALUE / NAVIGATE_URL を最優先**で押さえると現実的。
 
 ### 5.2 Workflow / Automation の関係
 
@@ -645,15 +651,17 @@ AppBots[]       Bot 本体（名前・有効/無効・EventName・ProcessName）
 
 ### 6.4 FormatRules
 
-`Presentation.FormatRules[]` は条件付き書式。
+`Presentation.FormatRules[]` は条件付き書式。実物のフィールド名は以下：
 
 | フィールド | 用途 |
 |-----------|------|
 | `Name` | ルール名 |
-| `Tables` | 対象テーブル |
-| `Columns` | 対象列 |
-| `IfThisIsTrue` | 適用条件式 |
-| `Format` | 色・アイコン・太字等の設定 |
+| `TableOrSlice` | 対象テーブル名 or Slice 名（**`Tables` ではない**） |
+| `ColumnsToFormat` | 対象列の配列 |
+| `Condition`, `ConditionEvaluatable` | 適用条件式（`=` プレフィックス） |
+| `Settings` | 色・アイコン・太字等の表示設定（オブジェクト） |
+| `RuleOrder` | 評価順序（数値） |
+| `Disabled` | 無効化フラグ |
 
 ---
 

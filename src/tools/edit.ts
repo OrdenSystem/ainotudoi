@@ -2503,12 +2503,38 @@ export async function promoteToRef(args: {
   };
 }
 
+// Security Filter 式が「対象テーブルの仮想列」を直接参照していないかチェック。
+// Security Filter は実カラム式のみ評価される（spec.md §7.1）。
+// 別テーブル参照（ANY(別表[列]) や LOOKUP）はサーバ側で実列のみ評価可能なので OK。
+// このチェックは「対象テーブル直下の [列名] が仮想列でないか」を見る。
+function detectVirtualColsInFilter(
+  filterExpr: string,
+  targetTableSchema: { Attributes?: Array<Record<string, unknown>> } | undefined,
+): string[] {
+  if (!filterExpr || !targetTableSchema?.Attributes) return [];
+  const virtualCols = new Set<string>();
+  for (const a of targetTableSchema.Attributes) {
+    if (a.IsVirtual === true && typeof a.Name === "string") virtualCols.add(a.Name);
+  }
+  if (virtualCols.size === 0) return [];
+
+  // [列名] パターンを抽出。[テーブル名][列名] のような連続形は除外
+  // (?<![\]\w]) ... 直前が ] または \w だと別テーブル参照とみなす
+  const matches = filterExpr.matchAll(/(?<![\]\w])\[([^\[\]]+)\]/g);
+  const found: string[] = [];
+  for (const m of matches) {
+    if (virtualCols.has(m[1])) found.push(m[1]);
+  }
+  return [...new Set(found)];
+}
+
 export async function setSecurityFilter(args: {
   appId?: string;
   appName?: string;
   tableName: string;
   filter: string;
   apply?: boolean;
+  allowVirtualCols?: boolean;
 }): Promise<{
   dryRun: boolean;
   applied: boolean;
@@ -2517,6 +2543,7 @@ export async function setSecurityFilter(args: {
   requested: string | null;
   after?: string | null;
   verified?: boolean;
+  warning?: string;
   message: string;
 }> {
   const credential = resolveCredential(args.appId);
@@ -2529,6 +2556,24 @@ export async function setSecurityFilter(args: {
     const known = dataSets.map((d) => d.Name as string).join(", ");
     throw new Error(`テーブル '${args.tableName}' が見つかりません。既知: ${known}`);
   }
+
+  // 対象テーブルの Schema を取得して仮想列を確認
+  const schemas = app.AppData?.DataSchemas ?? [];
+  const targetSchema =
+    schemas.find((s) => s.AutoSchemaFrom === args.tableName) ??
+    schemas.find((s) => s.Name === `${args.tableName}_Schema`) ??
+    schemas.find((s) => s.Name === args.tableName);
+
+  const virtualColsInFilter = detectVirtualColsInFilter(args.filter, targetSchema);
+  if (virtualColsInFilter.length > 0 && !args.allowVirtualCols) {
+    throw new Error(
+      `Security Filter 式に対象テーブルの仮想列が含まれています: [${virtualColsInFilter.join("], [")}]。Security Filter はサーバ側で実列のみ評価されるので、仮想列を使うと絞り込みが機能しません（spec.md §7.1）。実列に書き換えるか、明示的に許可する場合は allowVirtualCols: true を指定してください。`,
+    );
+  }
+  const warning =
+    virtualColsInFilter.length > 0
+      ? `仮想列 [${virtualColsInFilter.join("], [")}] が含まれています（allowVirtualCols: true により許可）。サーバ側で評価できず絞り込みが機能しない可能性があります。`
+      : undefined;
 
   const before = (ds.DataFilter ?? extractEvalSource(ds.DataFilterEvaluatable as Evaluatable | null | undefined)) as string | null;
   const trimmed = args.filter.trim();
@@ -2544,6 +2589,7 @@ export async function setSecurityFilter(args: {
       tableName: args.tableName,
       before,
       requested: newFilter,
+      warning,
       message: "変更不要",
     };
   }
@@ -2554,6 +2600,7 @@ export async function setSecurityFilter(args: {
       tableName: args.tableName,
       before,
       requested: newFilter,
+      warning,
       message: "dry-run。apply: true で実際送信。Security Filter は実カラム式のみ評価される（仮想列・dereference は使用不可）。",
     };
   }
@@ -2572,6 +2619,7 @@ export async function setSecurityFilter(args: {
     requested: newFilter,
     after,
     verified: after === newFilter,
+    warning,
     message: after === newFilter ? "✅ Security Filter 更新完了" : `⚠️ 期待 '${newFilter}' だが現在 '${after}'。複雑式は再パースされない可能性。`,
   };
 }

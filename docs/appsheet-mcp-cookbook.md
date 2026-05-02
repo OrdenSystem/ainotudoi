@@ -484,6 +484,211 @@ appsheet_clone_bot({
 
 ---
 
+## レシピ 11: 「個人設定」テーブルでマルチロール権限管理
+
+### 目的
+
+実プロジェクトで鉄板の **マルチロール権限管理パターン**を MCP ツールでセットアップ。`USEREMAIL()` の直接比較ではなく、個人設定テーブル経由で「担当者ロール / 管理者ロール」を切替可能にする。
+
+### 前提
+
+- 業務テーブル（例: `ケース記録`）が既に存在
+- 担当者情報を保持する列（例: `[記録者]`）がある
+
+### 手順
+
+**フェーズ A: 個人設定テーブルを作成（手動 or create_table）**
+
+```
+appsheet_create_table({
+  newTableName: "個人設定",
+  sourceQualifier: "個人設定",   // データソース上の実体名
+  templateTableName: "<既存の AppSheet DB テーブル名>",
+  apply: false
+})
+```
+
+その後、Editor で以下の列を整える（実列追加は GUI または HAR ベースで実装される将来ヘルパで）:
+
+```
+個人設定:
+  - UserMail (Email, IsKey: true)
+  - 職員在籍ID (Ref → StaffStatus__c など)
+  - 職員在籍YN_ケース (Yes/No)
+  - 職員在籍YN_帳票 (Yes/No)
+  - 利用者ID (LongText)
+  - 使用事業所 (LongText)
+```
+
+**フェーズ B: 個人設定の Security Filter（自分の行のみ）**
+
+```
+appsheet_set_security_filter({
+  tableName: "個人設定",
+  filter: 'USEREMAIL() = [UserMail]',
+  apply: true
+})
+```
+
+**フェーズ C: 業務テーブルの Security Filter（個人設定経由）**
+
+```
+appsheet_set_security_filter({
+  tableName: "ケース記録",
+  filter: 'IF(ANY(個人設定[職員在籍YN_ケース]), [記録者] = ANY(個人設定[職員在籍ID]), TRUE)',
+  apply: true
+})
+```
+
+**フェーズ D: ユーザーカスタマイズ Slice**
+
+```
+appsheet_add_slice({
+  sliceName: "ユーザーカスタマイズ",
+  sourceTable: "個人設定",
+  filterCondition: 'USEREMAIL() = [UserMail]',
+  apply: true
+})
+```
+
+これで設定編集 View で「自分の設定だけ」が見える。
+
+### 検証
+
+- 担当ロール（職員在籍YN_ケース = TRUE）でログイン → 自分の記録者の行のみ表示
+- 管理者ロール（職員在籍YN_ケース = FALSE）でログイン → 全行表示
+- 個人設定テーブルで他人の行は見えない
+
+### 落とし穴
+
+- 個人設定の **行が複数あると `ANY()` で 1 行決まらない** → 必ず Security Filter で 1 行に絞る
+- 個人設定が `USEREMAIL()` の値を持っていないユーザーは **データが見えない** → デフォルト行を AppSheet API v2 で自動追加する Bot を別途作る
+- `ANY()` の引数列が **null だと比較が成立しない**（`null = 値` は FALSE）。null チェックを `IFS()` か `OR(ISBLANK(...), ...)` で先に入れる
+
+---
+
+## レシピ 12: マルチテナント識別子で 1 マスタ N アプリ運用
+
+### 目的
+
+複数テナント（事業所）が **共通のマスタテーブル**を参照しつつ、それぞれ自テナントのデータだけ見える構成を作る。
+
+### 前提
+
+- マスタテーブル（例: `001_事業所加算マスタ`）に `[使用事業所]` 列（LongText）がある
+- 各行の `[使用事業所]` には `"HAHAHA, FUFUFU, FOO_BAR"` のようにテナント識別子をカンマ区切りで保持
+
+### 手順
+
+```
+1. アプリ識別子を決める（例: "HAHAHA"）
+
+2. マスタの Security Filter を設定:
+   appsheet_set_security_filter({
+     tableName: "001_事業所加算マスタ",
+     filter: 'IN("HAHAHA", [使用事業所])',
+     apply: true
+   })
+
+3. 「フラグ ON のものだけ」を見せる Slice:
+   appsheet_add_slice({
+     sliceName: "有効_事業所加算",
+     sourceTable: "001_事業所加算マスタ",
+     filterCondition: '[フラグ]',
+     apply: true
+   })
+```
+
+### 検証
+
+- アプリ A から `001_事業所加算マスタ` の `[使用事業所]` に `"HAHAHA"` が含まれる行のみ取得
+- アプリ B（識別子 "FUFUFU"）からは別の行集合
+- マスタを更新 → 識別子追記すれば該当アプリで即時表示
+
+### 落とし穴
+
+- アプリ識別子を `[使用事業所]` から漏らすと、そのアプリでは行が見えなくなる（**追加だけで OK**、削除は影響大）
+- 識別子のスペル違い（HAHAHA vs HaHaHa）で IN マッチしない → **大文字統一など命名規約を docs に明記**
+- 大量行マスタで全件 IN 評価は重い → **Slice 経由でさらに絞り込み**
+
+---
+
+## レシピ 13: 帳票生成の 3 段階 Bot 自動化チェーン
+
+### 目的
+
+帳票（PDF）生成のような複数段の処理を Bot チェーンで実装する。ADDS → UPDATES → UPDATES の 3 段で **段階的に処理**する。
+
+### 前提
+
+- 業務テーブル（例: `帳票マスタ複製登録`）に以下の列がある:
+  - `[帳票完了フラグ]` (Yes/No)
+  - `[展開UserMail]` (Email, 処理済みマーカー)
+  - 子テーブル（例: `帳票子レコード複製登録`）への REF が定義済み
+
+### 手順
+
+**Bot 1: ADDS_ONLY で子展開**
+
+```
+appsheet_create_bot({
+  botName: "帳票_子展開_自動化",
+  tableName: "帳票マスタ複製登録",
+  actionName: "<子展開 Action>",
+  eventType: "ADDS_ONLY",
+  filterCondition: 'TRUE',
+  apply: true
+})
+```
+
+**Bot 2: UPDATES_ONLY で子項目反映**
+
+```
+appsheet_create_bot({
+  botName: "子項目_スプシ反映",
+  tableName: "帳票マスタ複製登録",
+  actionName: "<子項目反映 Action>",
+  eventType: "UPDATES_ONLY",
+  filterCondition: '[展開フラグ] = TRUE',
+  apply: true
+})
+```
+
+**Bot 3: UPDATES_ONLY で完了登録**
+
+```
+appsheet_create_bot({
+  botName: "帳票完了登録_基本報酬",
+  tableName: "帳票マスタ複製登録",
+  actionName: "<完了登録 Action>",
+  eventType: "UPDATES_ONLY",
+  filterCondition: 'AND([帳票完了フラグ], ISBLANK([展開UserMail]))',
+  apply: true
+})
+```
+
+**Bot 4: Schedule Bot で PDF 生成**
+
+```
+PDF 生成は別途 Schedule Bot で対象 Slice (PDF生成待機リスト) を処理。
+（create_bot は Schedule トリガをまだサポートしていないので、HAR 取得後に対応）
+```
+
+### 検証
+
+- 親行を追加 → Bot 1 で子展開
+- 親行を更新（展開フラグ ON） → Bot 2 で子項目反映
+- 親行を更新（帳票完了フラグ ON） → Bot 3 で完了登録 → 展開UserMail が埋まる
+- Schedule Bot で PDF 生成
+
+### 落とし穴
+
+- ADDS_ONLY と UPDATES_ONLY を**明確に分離**しないと Bot 2 が Bot 1 直後にも誤発火する
+- 完了系 Bot の Condition で **`ISBLANK([展開UserMail])`** を入れないと 2 重実行する
+- Bot 3' (帳票完了登録_算定以外) のように、同じ EventType でも **Condition で分岐**して並行 Bot にできる
+
+---
+
 ## 付録 A: ツール呼出の dry-run / apply 規約
 
 書込み系ツールはすべて **デフォルト dry-run**。`apply: true` を明示しない限り実環境に反映されない。

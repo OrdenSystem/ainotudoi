@@ -827,7 +827,7 @@ const tools: Tool[] = [
   {
     name: "appsheet_set_security_filter",
     description:
-      "テーブルの Security Filter (DataSet.DataFilter) を設定する。サーバ側で評価されデータ秘匿に使える。空文字を渡すとフィルタ削除。実カラム式のみ評価される（仮想列・dereference は不可）。デフォルト dry-run。",
+      "テーブルの Security Filter (DataSet.DataFilter) を設定する。サーバ側で評価されデータ秘匿に使える。空文字を渡すとフィルタ削除。実カラム式のみ評価される（仮想列・dereference は不可）— 対象テーブル直下の仮想列を式中に検出した場合はエラー。allowVirtualCols: true で警告に降格可能。デフォルト dry-run。",
     inputSchema: {
       type: "object",
       properties: {
@@ -836,7 +836,11 @@ const tools: Tool[] = [
         tableName: { type: "string", description: "DataSet 名（テーブル名）" },
         filter: {
           type: "string",
-          description: 'AppSheet 式。例: \'[担当者メール] = USEREMAIL()\'。空文字でフィルタ削除。',
+          description: 'AppSheet 式。例: \'[担当者メール] = USEREMAIL()\' / \'IF(ANY(個人設定[フラグ]), [担当] = ANY(個人設定[ID]), TRUE)\'。空文字でフィルタ削除。',
+        },
+        allowVirtualCols: {
+          type: "boolean",
+          description: "true で、対象テーブルの仮想列を式中に含むことを許可（デフォルト false: エラー）。許可しても warning は出る。",
         },
         apply: { type: "boolean" },
       },
