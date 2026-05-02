@@ -30,7 +30,7 @@ AppSheet の式言語は **dereference (`[親列].[孫列]`)** と **REF_ROWS** 
 **設計手順**:
 
 1. エンティティ（業務概念）を洗い出してテーブル化
-2. 「A は B の一部か？」を判定 → Yes なら `Ref` 型 + `IsPartOf: true` で親子化
+2. 「A は B の一部か？」を判定 → Yes なら `Ref` 型 + `IsAPartOf: true` で親子化
 3. 「A は B を 1 つ持つか？」 → Yes なら `Ref` 型のみ（is-a-part-of なし）
 4. 多対多は中間テーブルを切る（直接 `EnumList<Ref>` も可だが集計が苦しい）
 

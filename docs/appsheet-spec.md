@@ -286,7 +286,7 @@ Presentation
 | `Yes/No` | 真偽 | - |
 | `Enum` | 選択肢（単一） | `EnumValues`, `AllowOtherValues`, `InputMode` |
 | `EnumList` | 選択肢（複数） | `EnumValues`, `InputMode` |
-| `Ref` | 他テーブルへの参照 | `ReferencedTableName`, `IsPartOf` |
+| `Ref` | 他テーブルへの参照 | `ReferencedTableName`, `ReferencedKeyColumn`, `IsAPartOf`（A が入る） |
 | `List` | リスト | `ElementType` |
 | `Image` / `Thumbnail` / `Drawing` / `Signature` / `File` | 画像・添付 | - |
 | `Address` / `LatLong` | 地理 | - |

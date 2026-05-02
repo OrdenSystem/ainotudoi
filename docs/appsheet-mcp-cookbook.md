@@ -92,7 +92,7 @@
      table: "子テーブル",
      column: "顧客 ID",
      newType: "Ref",
-     typeAuxData: { ReferencedTableName: "顧客マスタ", IsPartOf: false },
+     typeAuxData: { ReferencedTableName: "顧客マスタ", IsAPartOf: false },
      apply: false  // まず dry-run
    }
 
@@ -121,7 +121,7 @@
 ### 落とし穴
 
 - **既存値が親テーブルに無い**と REF 化で「Invalid value」になる。事前にデータクレンジング。
-- IsPartOf: true は **親削除時に子も連鎖削除**される。慎重に。
+- IsAPartOf: true は **親削除時に子も連鎖削除**される。慎重に。
 
 ---
 
