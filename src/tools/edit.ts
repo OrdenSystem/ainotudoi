@@ -1538,6 +1538,132 @@ export async function setColumnDescription(args: {
   };
 }
 
+export async function createTable(args: {
+  appId?: string;
+  appName?: string;
+  newTableName: string;
+  sourceQualifier: string;
+  templateTableName?: string;
+  sourceQualifierId?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  newTableName: string;
+  templateTableName: string;
+  componentId?: string;
+  message: string;
+  warning?: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  if (!appData) throw new Error("AppData が見つかりません");
+
+  const dataSets = (appData.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (dataSets.find((d) => d.Name === args.newTableName)) {
+    throw new Error(`テーブル '${args.newTableName}' は既に存在します`);
+  }
+
+  // テンプレ DataSet を選定（同じデータソースの既存テーブル）
+  let template: Record<string, unknown> | undefined;
+  if (args.templateTableName) {
+    template = dataSets.find((d) => d.Name === args.templateTableName);
+    if (!template) {
+      throw new Error(`テンプレ '${args.templateTableName}' が見つかりません`);
+    }
+  } else {
+    // ユーザー作成のテーブル（IsAutoCreated でない）を優先
+    template = dataSets.find((d) => d.IsAutoCreated === false && d.Name && !(d.Name as string).startsWith("_") && !(d.Name as string).includes("Process"));
+    if (!template) template = dataSets[0];
+    if (!template) throw new Error("テンプレに使える既存テーブルがありません。templateTableName で明示指定してください");
+  }
+  const templateName = template.Name as string;
+
+  // テンプレからデータソース接続情報をコピー
+  const newDataSet: Record<string, unknown> = {
+    ExprLookup: {},
+    Name: args.newTableName,
+    SchemaName: "auto",
+    PriorSchemaName: null,
+    AllowedUpdates: 0,
+    UpdateMode: 7,
+    HideExistingRows: false,
+    UpdateModeExpression: null,
+    DataFilter: null,
+    DataFilterEvaluatable: null,
+    LocaleName: template.LocaleName ?? "ja-JP",
+    DataAccessMode: template.DataAccessMode ?? "as app creator",
+    IsShared: template.IsShared ?? true,
+    DataSourceName: template.DataSourceName,
+    ProviderName: template.ProviderName,
+    Source: template.Source,
+    SourcePath: template.SourcePath,
+    SourceQualifier: args.sourceQualifier,
+    SourceQualifierId: args.sourceQualifierId ?? null,
+    SourceType: template.SourceType ?? "TABLE",
+    ColumnOrder: ["_RowNumber"],
+    EnablePartitioning: false,
+    SourcePartitionDefinition: { Expression: null, Partitions: [], DefaultValue: null },
+    EnableWorksheetPartitioning: false,
+    WorksheetPartitionDefinition: { Expression: null, Partitions: [], DefaultValue: null },
+    CloudObjectStore: template.CloudObjectStore ?? "_Default",
+    IsAutoCreated: false,
+    ServerCachingInterval: template.ServerCachingInterval ?? "FIVE_MINUTE",
+    NeedsSchemaRegen: true,
+    ProviderSpecificSchema: null,
+    CreatedBy: null,
+    AutomationPurpose: 0,
+    DocumentCache: null,
+    DocumentRefreshRegion: "",
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: generateComponentId(),
+    _isNew: true,
+    _version: 1,
+    _index: dataSets.length,
+    _path: `AppData.DataSets[${dataSets.length}]`,
+  };
+
+  if (!appData.DataSets) appData.DataSets = [];
+  (appData.DataSets as Array<Record<string, unknown>>).push(newDataSet);
+
+  const warning = `Schema/Initial View/Default Actions は AppSheet 側で自動生成（SchemaName: "auto", NeedsSchemaRegen: true）。SourceQualifier '${args.sourceQualifier}' がデータソース上に実在しないと saveapp は失敗します。`;
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      newTableName: args.newTableName,
+      templateTableName: templateName,
+      warning,
+      message: `dry-run。テンプレ '${templateName}' のデータソース接続情報をコピーして新テーブル '${args.newTableName}' (SourceQualifier: ${args.sourceQualifier}) を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedDS = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined;
+  const created = refreshedDS?.find((d) => d.Name === args.newTableName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    newTableName: args.newTableName,
+    templateTableName: templateName,
+    componentId: created?.ComponentId as string | undefined,
+    warning,
+    message: created
+      ? `✅ テーブル '${args.newTableName}' 作成完了。Schema/View/Default Actions は AppSheet 側で自動生成された。`
+      : `⚠️ saveapp Success だが事後検証でテーブル不在。SourceQualifier がデータソース上に実在しない可能性。`,
+  };
+}
+
 export async function addCallScriptTask(args: {
   appId?: string;
   appName?: string;

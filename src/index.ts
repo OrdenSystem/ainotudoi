@@ -61,6 +61,7 @@ import {
   addSlice,
   removeSlice,
   addCallScriptTask,
+  createTable,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -624,6 +625,33 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_create_table",
+    description:
+      "既存データソースの別シート/SQL テーブルを AppSheet に取り込む（DataSet 1 件追加・Schema は AppSheet 側で自動生成）。テンプレ既存テーブルからデータソース接続情報をコピー。SourceQualifier はデータソース上のシート名や SQL テーブル名。新規データソース接続は GUI 必須でこのツールでは扱えない。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        newTableName: { type: "string", description: "アプリ内で使う新テーブル名" },
+        sourceQualifier: {
+          type: "string",
+          description: "データソース上のシート名 / SQL テーブル名。スプシなら『シートタブ名』、SQL なら『テーブル名』",
+        },
+        templateTableName: {
+          type: "string",
+          description: "データソース接続情報をコピーする元テーブル名。省略時はユーザー作成テーブルから自動選定",
+        },
+        sourceQualifierId: {
+          type: "string",
+          description: "スプシのシート ID 等。省略可",
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["newTableName", "sourceQualifier"],
+    },
+  },
+  {
     name: "appsheet_add_call_script_task",
     description:
       "AppsScript Task (Call a Script) を新規追加し、指定 Process の Nodes に呼出ノードを連結する。GAS 関数呼出 + 戻り値受取の構造を一括構築。戻り値は LongText 1 個で、Process 内では [<stepName>].[Output] で参照可能。デフォルト dry-run。",
@@ -913,6 +941,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return removeSlice(args as Parameters<typeof removeSlice>[0]);
     case "appsheet_add_call_script_task":
       return addCallScriptTask(args as Parameters<typeof addCallScriptTask>[0]);
+    case "appsheet_create_table":
+      return createTable(args as Parameters<typeof createTable>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }
