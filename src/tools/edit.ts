@@ -1537,3 +1537,76 @@ export async function setColumnDescription(args: {
     message: "送信完了・スナップショット更新済み",
   };
 }
+
+export async function setSecurityFilter(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  filter: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  tableName: string;
+  before: string | null;
+  requested: string | null;
+  after?: string | null;
+  verified?: boolean;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const dataSets = ((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined;
+  if (!dataSets) throw new Error("DataSets 不明");
+  const ds = dataSets.find((d) => d.Name === args.tableName);
+  if (!ds) {
+    const known = dataSets.map((d) => d.Name as string).join(", ");
+    throw new Error(`テーブル '${args.tableName}' が見つかりません。既知: ${known}`);
+  }
+
+  const before = (ds.DataFilter ?? extractEvalSource(ds.DataFilterEvaluatable as Evaluatable | null | undefined)) as string | null;
+  const trimmed = args.filter.trim();
+  const newFilter: string | null = trimmed === "" ? null : normalizeFormula(trimmed);
+
+  ds.DataFilter = newFilter;
+  ds.DataFilterEvaluatable = null;
+
+  if (before === newFilter) {
+    return {
+      dryRun: !args.apply,
+      applied: false,
+      tableName: args.tableName,
+      before,
+      requested: newFilter,
+      message: "変更不要",
+    };
+  }
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      tableName: args.tableName,
+      before,
+      requested: newFilter,
+      message: "dry-run。apply: true で実際送信。Security Filter は実カラム式のみ評価される（仮想列・dereference は使用不可）。",
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedDs = (((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined)?.find((d) => d.Name === args.tableName);
+  const after = (refreshedDs?.DataFilter ?? extractEvalSource(refreshedDs?.DataFilterEvaluatable as Evaluatable | null | undefined)) as string | null;
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: true,
+    tableName: args.tableName,
+    before,
+    requested: newFilter,
+    after,
+    verified: after === newFilter,
+    message: after === newFilter ? "✅ Security Filter 更新完了" : `⚠️ 期待 '${newFilter}' だが現在 '${after}'。複雑式は再パースされない可能性。`,
+  };
+}

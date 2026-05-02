@@ -54,6 +54,7 @@ import {
   removeEnumValue,
   cloneTable,
   removeTable,
+  setSecurityFilter,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -616,6 +617,25 @@ const tools: Tool[] = [
       required: ["tableName", "columnName", "description"],
     },
   },
+  {
+    name: "appsheet_set_security_filter",
+    description:
+      "テーブルの Security Filter (DataSet.DataFilter) を設定する。サーバ側で評価されデータ秘匿に使える。空文字を渡すとフィルタ削除。実カラム式のみ評価される（仮想列・dereference は不可）。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string", description: "DataSet 名（テーブル名）" },
+        filter: {
+          type: "string",
+          description: 'AppSheet 式。例: \'[担当者メール] = USEREMAIL()\'。空文字でフィルタ削除。',
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "filter"],
+    },
+  },
 ];
 
 type ToolArgs = Record<string, unknown>;
@@ -700,6 +720,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return removeTable(args as Parameters<typeof removeTable>[0]);
     case "appsheet_set_column_description":
       return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
+    case "appsheet_set_security_filter":
+      return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }
