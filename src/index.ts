@@ -54,6 +54,14 @@ import {
   removeEnumValue,
   cloneTable,
   removeTable,
+  setSecurityFilter,
+  promoteToRef,
+  addOpenUrlAction,
+  createBot,
+  addSlice,
+  removeSlice,
+  addCallScriptTask,
+  createTable,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -616,6 +624,229 @@ const tools: Tool[] = [
       required: ["tableName", "columnName", "description"],
     },
   },
+  {
+    name: "appsheet_create_table",
+    description:
+      "既存データソースの別シート/SQL テーブルを AppSheet に取り込む（DataSet 1 件追加・Schema は AppSheet 側で自動生成）。テンプレ既存テーブルからデータソース接続情報をコピー。SourceQualifier はデータソース上のシート名や SQL テーブル名。新規データソース接続は GUI 必須でこのツールでは扱えない。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        newTableName: { type: "string", description: "アプリ内で使う新テーブル名" },
+        sourceQualifier: {
+          type: "string",
+          description: "データソース上のシート名 / SQL テーブル名。スプシなら『シートタブ名』、SQL なら『テーブル名』",
+        },
+        templateTableName: {
+          type: "string",
+          description: "データソース接続情報をコピーする元テーブル名。省略時はユーザー作成テーブルから自動選定",
+        },
+        sourceQualifierId: {
+          type: "string",
+          description: "スプシのシート ID 等。省略可",
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["newTableName", "sourceQualifier"],
+    },
+  },
+  {
+    name: "appsheet_add_call_script_task",
+    description:
+      "AppsScript Task (Call a Script) を新規追加し、指定 Process の Nodes に呼出ノードを連結する。GAS 関数呼出 + 戻り値受取の構造を一括構築。戻り値は LongText 1 個で、Process 内では [<stepName>].[Output] で参照可能。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        processName: { type: "string", description: "Task ノードを追加する対象 Process 名" },
+        taskName: { type: "string", description: "Task 名（アプリ内一意）" },
+        scriptId: { type: "string", description: "GAS スクリプト ID。'DocId=...' 形式" },
+        functionName: { type: "string", description: "呼出す GAS 関数名" },
+        functionArguments: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              expression: { type: "string", description: "AppSheet 式。例: '記事管理[ID]'" },
+            },
+            required: ["name", "expression"],
+          },
+          description: "GAS 関数のパラメータ。各要素 {name, expression}",
+        },
+        tableName: { type: "string", description: "Task のスコープ対象テーブル" },
+        stepName: {
+          type: "string",
+          description: "Process 内での Step 表示名。省略時は taskName。戻り値参照は [<stepName>].[Output]",
+        },
+        asyncExec: { type: "boolean", description: "非同期実行。デフォルト false" },
+        forEntireTable: { type: "boolean", description: "テーブル全体に対して 1 回実行。デフォルト true" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "scriptId", "functionName", "tableName"],
+    },
+  },
+  {
+    name: "appsheet_add_slice",
+    description:
+      "Slice (TableSlice) を新規追加する。クライアント側でフィルタ評価・列順カスタムができる。データ秘匿には使えない（→ Security Filter）。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        sliceName: { type: "string", description: "Slice 名（アプリ内一意）" },
+        sourceTable: { type: "string", description: "ソーステーブル名" },
+        filterCondition: {
+          type: "string",
+          description: 'フィルタ条件式。例: \'[ステータス] = "レビュー待ち"\'。省略時は全行',
+        },
+        columns: {
+          type: "array",
+          items: { type: "string" },
+          description: "公開する列名の配列（順序付き）。省略時はソーステーブルの全列を自動取得",
+        },
+        actions: {
+          type: "array",
+          items: { type: "string" },
+          description: '使える Action 名の配列。省略時は ["**auto**"]（全 Action 継承）',
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["sliceName", "sourceTable"],
+    },
+  },
+  {
+    name: "appsheet_remove_slice",
+    description: "Slice を削除する。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        sliceName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["sliceName"],
+    },
+  },
+  {
+    name: "appsheet_create_bot",
+    description:
+      "Bot を新規作成する（AppBots / AppEvents / AppProcesses の 3 配列を同時追加・名前リンク自動）。Data Change Event でトリガーし、既存 Action を 1 つ実行する最小構成。Email Task 等は別途 Tasks 配列に追加可能。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        botName: { type: "string", description: "Bot 名（アプリ内一意）" },
+        tableName: { type: "string", description: "監視対象テーブル名" },
+        actionName: {
+          type: "string",
+          description: "Bot が実行する既存 Action の名前。Action は tableName と一致するテーブル所属である必要あり",
+        },
+        eventType: {
+          type: "string",
+          enum: ["ADDS_ONLY", "UPDATES_ONLY", "DELETES_ONLY", "ADDS_AND_UPDATES", "ADDS_UPDATES_DELETES"],
+          description: "発火する変更種別。デフォルト ADDS_AND_UPDATES",
+        },
+        filterCondition: {
+          type: "string",
+          description: "イベントフィルタ条件式。デフォルト TRUE（全変更）。例: '[ステータス] = \"承認済み\"'",
+        },
+        disabled: { type: "boolean", description: "Bot 無効状態で作成。デフォルト false" },
+        apply: { type: "boolean" },
+      },
+      required: ["botName", "tableName", "actionName"],
+    },
+  },
+  {
+    name: "appsheet_add_openurl_action",
+    description:
+      "OpenUrl (NAVIGATE_URL) 系 Action を新規追加する。外部 WebApp や HTTPS URL に遷移するボタン用。URL 式は CONCATENATE で動的組立可能。HTTP は警告。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string", description: "対象テーブル名" },
+        actionName: { type: "string", description: "Action 名（アプリ内一意）" },
+        urlExpression: {
+          type: "string",
+          description: 'URL 式。例: \'CONCATENATE("https://example.com/?id=", ENCODEURL([案件ID]))\'',
+        },
+        condition: {
+          type: "string",
+          description: "実行可否条件式（任意）。例: 'NOT(ISBLANK([URL]))'",
+        },
+        prominence: {
+          type: "string",
+          enum: ["Display_Inline", "Display_Prominently", "Display_Overlay"],
+          description: "表示位置。デフォルト Display_Inline",
+        },
+        launchExternal: {
+          type: "boolean",
+          description: "true で外部ブラウザで開く。デフォルト false（内蔵ビューア）",
+        },
+        needsConfirmation: { type: "boolean", description: "実行時に確認ダイアログ。デフォルト false" },
+        confirmationMessage: { type: "string" },
+        icon: { type: "string", description: "FontAwesome アイコン名。デフォルト fa-external-link" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName", "urlExpression"],
+    },
+  },
+  {
+    name: "appsheet_promote_to_ref",
+    description:
+      "テキスト型の親キー列を Ref 型に格上げする。親テーブルのキー列を自動検出し、TypeAuxData の ReferencedTableName / ReferencedKeyColumn / ReferencedType / IsAPartOf 等を組み立てる。dereference や REF_ROWS が使えるようになる。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string", description: "子テーブル名（Ref 化対象列を持つテーブル）" },
+        columnName: { type: "string", description: "Ref 化する列名（既存値は親キーと整合している必要あり）" },
+        parentTableName: { type: "string", description: "参照先（親）テーブル名" },
+        isAPartOf: {
+          type: "boolean",
+          description: "is-a-part-of 親子関係。true で親削除時に子も連鎖削除。デフォルト false",
+        },
+        relationshipName: { type: "string" },
+        inputMode: {
+          type: "string",
+          description: "Auto / Buttons / Stack / Dropdown 等。デフォルト Auto",
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "parentTableName"],
+    },
+  },
+  {
+    name: "appsheet_set_security_filter",
+    description:
+      "テーブルの Security Filter (DataSet.DataFilter) を設定する。サーバ側で評価されデータ秘匿に使える。空文字を渡すとフィルタ削除。実カラム式のみ評価される（仮想列・dereference は不可）— 対象テーブル直下の仮想列を式中に検出した場合はエラー。allowVirtualCols: true で警告に降格可能。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string", description: "DataSet 名（テーブル名）" },
+        filter: {
+          type: "string",
+          description: 'AppSheet 式。例: \'[担当者メール] = USEREMAIL()\' / \'IF(ANY(個人設定[フラグ]), [担当] = ANY(個人設定[ID]), TRUE)\'。空文字でフィルタ削除。',
+        },
+        allowVirtualCols: {
+          type: "boolean",
+          description: "true で、対象テーブルの仮想列を式中に含むことを許可（デフォルト false: エラー）。許可しても warning は出る。",
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "filter"],
+    },
+  },
 ];
 
 type ToolArgs = Record<string, unknown>;
@@ -700,6 +931,22 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return removeTable(args as Parameters<typeof removeTable>[0]);
     case "appsheet_set_column_description":
       return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
+    case "appsheet_set_security_filter":
+      return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
+    case "appsheet_promote_to_ref":
+      return promoteToRef(args as Parameters<typeof promoteToRef>[0]);
+    case "appsheet_add_openurl_action":
+      return addOpenUrlAction(args as Parameters<typeof addOpenUrlAction>[0]);
+    case "appsheet_create_bot":
+      return createBot(args as Parameters<typeof createBot>[0]);
+    case "appsheet_add_slice":
+      return addSlice(args as Parameters<typeof addSlice>[0]);
+    case "appsheet_remove_slice":
+      return removeSlice(args as Parameters<typeof removeSlice>[0]);
+    case "appsheet_add_call_script_task":
+      return addCallScriptTask(args as Parameters<typeof addCallScriptTask>[0]);
+    case "appsheet_create_table":
+      return createTable(args as Parameters<typeof createTable>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }

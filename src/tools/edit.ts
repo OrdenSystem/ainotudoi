@@ -1537,3 +1537,1089 @@ export async function setColumnDescription(args: {
     message: "送信完了・スナップショット更新済み",
   };
 }
+
+export async function createTable(args: {
+  appId?: string;
+  appName?: string;
+  newTableName: string;
+  sourceQualifier: string;
+  templateTableName?: string;
+  sourceQualifierId?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  newTableName: string;
+  templateTableName: string;
+  componentId?: string;
+  message: string;
+  warning?: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  if (!appData) throw new Error("AppData が見つかりません");
+
+  const dataSets = (appData.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (dataSets.find((d) => d.Name === args.newTableName)) {
+    throw new Error(`テーブル '${args.newTableName}' は既に存在します`);
+  }
+
+  // テンプレ DataSet を選定（同じデータソースの既存テーブル）
+  let template: Record<string, unknown> | undefined;
+  if (args.templateTableName) {
+    template = dataSets.find((d) => d.Name === args.templateTableName);
+    if (!template) {
+      throw new Error(`テンプレ '${args.templateTableName}' が見つかりません`);
+    }
+  } else {
+    // ユーザー作成のテーブル（IsAutoCreated でない）を優先
+    template = dataSets.find((d) => d.IsAutoCreated === false && d.Name && !(d.Name as string).startsWith("_") && !(d.Name as string).includes("Process"));
+    if (!template) template = dataSets[0];
+    if (!template) throw new Error("テンプレに使える既存テーブルがありません。templateTableName で明示指定してください");
+  }
+  const templateName = template.Name as string;
+
+  // テンプレからデータソース接続情報をコピー
+  const newDataSet: Record<string, unknown> = {
+    ExprLookup: {},
+    Name: args.newTableName,
+    SchemaName: "auto",
+    PriorSchemaName: null,
+    AllowedUpdates: 0,
+    UpdateMode: 7,
+    HideExistingRows: false,
+    UpdateModeExpression: null,
+    DataFilter: null,
+    DataFilterEvaluatable: null,
+    LocaleName: template.LocaleName ?? "ja-JP",
+    DataAccessMode: template.DataAccessMode ?? "as app creator",
+    IsShared: template.IsShared ?? true,
+    DataSourceName: template.DataSourceName,
+    ProviderName: template.ProviderName,
+    Source: template.Source,
+    SourcePath: template.SourcePath,
+    SourceQualifier: args.sourceQualifier,
+    SourceQualifierId: args.sourceQualifierId ?? null,
+    SourceType: template.SourceType ?? "TABLE",
+    ColumnOrder: ["_RowNumber"],
+    EnablePartitioning: false,
+    SourcePartitionDefinition: { Expression: null, Partitions: [], DefaultValue: null },
+    EnableWorksheetPartitioning: false,
+    WorksheetPartitionDefinition: { Expression: null, Partitions: [], DefaultValue: null },
+    CloudObjectStore: template.CloudObjectStore ?? "_Default",
+    IsAutoCreated: false,
+    ServerCachingInterval: template.ServerCachingInterval ?? "FIVE_MINUTE",
+    NeedsSchemaRegen: true,
+    ProviderSpecificSchema: null,
+    CreatedBy: null,
+    AutomationPurpose: 0,
+    DocumentCache: null,
+    DocumentRefreshRegion: "",
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: generateComponentId(),
+    _isNew: true,
+    _version: 1,
+    _index: dataSets.length,
+    _path: `AppData.DataSets[${dataSets.length}]`,
+  };
+
+  if (!appData.DataSets) appData.DataSets = [];
+  (appData.DataSets as Array<Record<string, unknown>>).push(newDataSet);
+
+  const warning = `Schema/Initial View/Default Actions は AppSheet 側で自動生成（SchemaName: "auto", NeedsSchemaRegen: true）。SourceQualifier '${args.sourceQualifier}' がデータソース上に実在しないと saveapp は失敗します。`;
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      newTableName: args.newTableName,
+      templateTableName: templateName,
+      warning,
+      message: `dry-run。テンプレ '${templateName}' のデータソース接続情報をコピーして新テーブル '${args.newTableName}' (SourceQualifier: ${args.sourceQualifier}) を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedDS = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined;
+  const created = refreshedDS?.find((d) => d.Name === args.newTableName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    newTableName: args.newTableName,
+    templateTableName: templateName,
+    componentId: created?.ComponentId as string | undefined,
+    warning,
+    message: created
+      ? `✅ テーブル '${args.newTableName}' 作成完了。Schema/View/Default Actions は AppSheet 側で自動生成された。`
+      : `⚠️ saveapp Success だが事後検証でテーブル不在。SourceQualifier がデータソース上に実在しない可能性。`,
+  };
+}
+
+export async function addCallScriptTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  scriptId: string;
+  functionName: string;
+  functionArguments?: Array<{ name: string; expression: string }>;
+  tableName: string;
+  stepName?: string;
+  asyncExec?: boolean;
+  forEntireTable?: boolean;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  taskName: string;
+  processName: string;
+  componentIds?: { task: string; node: string };
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+
+  if (tasks.find((t) => t.Name === args.taskName)) {
+    throw new Error(`Task '${args.taskName}' は既に存在します`);
+  }
+
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+
+  // 対象テーブルの存在確認
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) {
+    throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+  }
+
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const outputColComponentId = generateComponentId();
+  const stepName = args.stepName ?? args.taskName;
+
+  const functionArgs = (args.functionArguments ?? []).map((a) => ({
+    Name: a.name,
+    Expression: normalizeFormula(a.expression),
+  }));
+
+  const outputSchema = {
+    ExprLookup: {},
+    Name: "Apps Script Output Schema",
+    Attributes: [
+      {
+        ExprLookup: {},
+        Name: "Output",
+        Type: "LongText",
+        TypeFromProvider: null,
+        TypeAuxData: null,
+        InternalQualifier: null,
+        Description: null,
+        DisplayName: null,
+        IsRequired: false,
+        Default: null,
+        DefaultExpression: null,
+        DefEdit: true,
+        IsSys: false,
+        DefinitionIsFixed: false,
+        IsKey: false,
+        IsKeyPart: false,
+        IsReadOnly: true,
+        ResetOnEdit: false,
+        IsHidden: false,
+        Formula: null,
+        AsdbFormula: null,
+        Category: null,
+        FormulaVersion: 0,
+        AppFormula: null,
+        IsLabel: false,
+        IsScannable: null,
+        IsNfcScannable: null,
+        Searchable: null,
+        IsVirtual: false,
+        IsAutoGenerated: false,
+        IsSensitive: false,
+        LocaleName: null,
+        IsValid: true,
+        Visibility: "ALWAYS",
+        DisableAutoUpdate: false,
+        ComponentId: outputColComponentId,
+        _isNew: true,
+        _version: 0,
+        _index: 0,
+        _path: `Behavior.Tasks[${tasks.length}].OutputSchema.Attributes[0]`,
+        MetaData: {},
+      },
+    ],
+    AutoSchemaFrom: null,
+    IsAutoCreated: false,
+    IsDependent: false,
+    CreatedBy: null,
+    AutomationPurpose: 0,
+    IsValid: true,
+    Visibility: "NEVER",
+    DisableAutoUpdate: false,
+    ComponentId: null,
+    _index: 0,
+    _path: `Behavior.Tasks[${tasks.length}].OutputSchema`,
+  };
+
+  const newTask: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.AppWorkflowActionAppsScript, Jeenee.DataTypes",
+    ExprLookup: {},
+    ScriptId: args.scriptId,
+    FunctionName: args.functionName,
+    FunctionArguments: functionArgs,
+    OutputAppsScriptType: "String",
+    OutputSchema: outputSchema,
+    AsyncExec: args.asyncExec ?? false,
+    Name: args.taskName,
+    Type: "AppsScript",
+    IsAiTask: false,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? true,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "User",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: 10,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  };
+
+  // Process の Nodes に TaskNode を追加
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: "AppsScript",
+    StepName: stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(newTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      taskName: args.taskName,
+      processName: args.processName,
+      message: `dry-run。AppsScript Task '${args.taskName}' (関数: ${args.functionName}) と Process '${args.processName}' への TaskNode を構築。apply: true で送信。戻り値は [${stepName}].[Output] で参照可能。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    taskName: args.taskName,
+    processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created
+      ? `✅ AppsScript Task '${args.taskName}' 作成 + Process '${args.processName}' 連結完了。戻り値は [${stepName}].[Output] で参照可能。`
+      : `⚠️ saveapp Success だが事後検証で Task 不在`,
+  };
+}
+
+export async function addSlice(args: {
+  appId?: string;
+  appName?: string;
+  sliceName: string;
+  sourceTable: string;
+  filterCondition?: string;
+  columns?: string[];
+  actions?: string[];
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  sliceName: string;
+  sourceTable: string;
+  componentId?: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  if (!appData) throw new Error("AppData が見つかりません");
+
+  // ソーステーブルの存在確認
+  const dataSets = (appData.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.sourceTable)) {
+    const known = dataSets.map((d) => d.Name as string).join(", ");
+    throw new Error(`ソーステーブル '${args.sourceTable}' が見つかりません。既知: ${known}`);
+  }
+
+  const slices = (appData.TableSlices as Array<Record<string, unknown>> | undefined) ?? [];
+  if (slices.find((s) => s.Name === args.sliceName)) {
+    throw new Error(`Slice '${args.sliceName}' は既に存在します`);
+  }
+
+  // columns 省略時はソーステーブルの全列を自動取得
+  let columns = args.columns;
+  if (!columns) {
+    const schemas = app.AppData?.DataSchemas ?? [];
+    const sourceSchema =
+      schemas.find((s) => s.AutoSchemaFrom === args.sourceTable) ??
+      schemas.find((s) => s.Name === `${args.sourceTable}_Schema`);
+    if (sourceSchema?.Attributes) {
+      columns = sourceSchema.Attributes.map((a) => a.Name as string).filter((n) => !!n);
+    } else {
+      columns = [];
+    }
+  }
+
+  const actions = args.actions ?? ["**auto**"];
+  const filterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : null;
+
+  const newSlice: Record<string, unknown> = {
+    ExprLookup: {},
+    Name: args.sliceName,
+    SourceTable: args.sourceTable,
+    SourceColumn: null,
+    RowFilterCondition: null,
+    RowFilterParameter: null,
+    Columns: columns,
+    Actions: actions,
+    FilterExpression: { Description: { Content: "" } },
+    FilterCondition: filterCondition,
+    FilterEvaluatable: null,
+    AllowedUpdates: 0,
+    UpdateMode: 7,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: generateComponentId(),
+    _isNew: true,
+    _version: 6,
+    _index: slices.length,
+    _path: `AppData.TableSlices[${slices.length}]`,
+  };
+
+  if (!appData.TableSlices) appData.TableSlices = [];
+  (appData.TableSlices as Array<Record<string, unknown>>).push(newSlice);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      sliceName: args.sliceName,
+      sourceTable: args.sourceTable,
+      message: `dry-run。Slice '${args.sliceName}' (source: '${args.sourceTable}', columns: ${columns.length} 件) を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedSlices = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.TableSlices as Array<Record<string, unknown>> | undefined;
+  const created = refreshedSlices?.find((s) => s.Name === args.sliceName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    sliceName: args.sliceName,
+    sourceTable: args.sourceTable,
+    componentId: created?.ComponentId as string | undefined,
+    message: created
+      ? `✅ Slice '${args.sliceName}' 作成完了`
+      : `⚠️ saveapp Success だが事後検証で Slice 不在`,
+  };
+}
+
+export async function removeSlice(args: {
+  appId?: string;
+  appName?: string;
+  sliceName: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  sliceName: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  const slices = (appData?.TableSlices as Array<Record<string, unknown>> | undefined) ?? [];
+  const idx = slices.findIndex((s) => s.Name === args.sliceName);
+  if (idx === -1) {
+    throw new Error(`Slice '${args.sliceName}' が見つかりません`);
+  }
+
+  slices.splice(idx, 1);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, sliceName: args.sliceName, message: "dry-run。apply: true で送信。" };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedSlices = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.TableSlices as Array<Record<string, unknown>> | undefined;
+  const stillThere = refreshedSlices?.find((s) => s.Name === args.sliceName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !stillThere,
+    sliceName: args.sliceName,
+    message: stillThere ? `⚠️ saveapp Success だが Slice '${args.sliceName}' がまだ残っている` : `✅ Slice '${args.sliceName}' 削除完了`,
+  };
+}
+
+export async function createBot(args: {
+  appId?: string;
+  appName?: string;
+  botName: string;
+  tableName: string;
+  actionName: string;
+  eventType?: "ADDS_ONLY" | "UPDATES_ONLY" | "DELETES_ONLY" | "ADDS_AND_UPDATES" | "ADDS_UPDATES_DELETES";
+  filterCondition?: string;
+  disabled?: boolean;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  botName: string;
+  eventName: string;
+  processName: string;
+  componentIds?: { bot: string; event: string; process: string };
+  message: string;
+  warning?: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+
+  const bots = (behavior.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+  const events = (behavior.AppEvents as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+
+  if (bots.find((b) => b.Name === args.botName)) {
+    throw new Error(`Bot '${args.botName}' は既に存在します`);
+  }
+
+  // 対象 Action の存在確認
+  const dataActions = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetAction = dataActions.find((a) => a.Name === args.actionName && a.Table === args.tableName);
+  if (!targetAction) {
+    throw new Error(`Action '${args.actionName}' (Table: '${args.tableName}') が見つかりません`);
+  }
+
+  // 対象テーブルの Schema 名を解決
+  const schemas = app.AppData?.DataSchemas ?? [];
+  const schema =
+    schemas.find((s) => s.AutoSchemaFrom === args.tableName) ??
+    schemas.find((s) => s.Name === `${args.tableName}_Schema`) ??
+    schemas.find((s) => s.Name === args.tableName);
+  if (!schema) {
+    throw new Error(`テーブル '${args.tableName}' の Schema が見つかりません`);
+  }
+  const schemaName = schema.Name;
+
+  const eventName = args.botName.replace(/^_+/, "") + "_event";
+  const processName = `Process for ${args.botName}`;
+
+  if (events.find((e) => e.Name === eventName)) {
+    throw new Error(`Event '${eventName}' は既に存在します（Bot 名から自動生成された名前）。別の Bot 名にしてください`);
+  }
+  if (processes.find((p) => p.Name === processName)) {
+    throw new Error(`Process '${processName}' は既に存在します`);
+  }
+
+  const eventType = args.eventType ?? "ADDS_AND_UPDATES";
+  const filterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : "=TRUE";
+
+  // Step Action ノードの ComponentId
+  const stepNodeComponentId = generateComponentId();
+  const eventDefComponentId = generateComponentId();
+  const eventComponentId = generateComponentId();
+  const processComponentId = generateComponentId();
+  const botComponentId = generateComponentId();
+
+  const newEvent = {
+    ExprLookup: {},
+    Name: eventName,
+    EventType: "Change",
+    AppEventDefinition: {
+      $type: "Jeenee.DataTypes.AppChangeEventDefinition, Jeenee.DataTypes",
+      ExprLookup: {},
+      ChangeEvent: eventType,
+      SchemaName: schemaName,
+      IsValid: true,
+      Visibility: "ALWAYS",
+      DisableAutoUpdate: false,
+      ComponentId: eventDefComponentId,
+    },
+    FilterCondition: filterCondition,
+    Disabled: false,
+    CreatedBy: null,
+    AutomationPurpose: 0,
+    AssociatedStepName: null,
+    ExecutionId: null,
+    IgnoreSecurityFilters: false,
+    Id: null,
+    Icon: null,
+    IsEmbedded: false,
+    Scope: "LOCAL",
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: eventComponentId,
+    _isNew: true,
+    _version: 6,
+    _index: events.length,
+    _path: `Behavior.AppEvents[${events.length}]`,
+  };
+
+  const newProcess = {
+    ExprLookup: {},
+    Name: processName,
+    InputSchemaName: schemaName,
+    Icon: null,
+    Nodes: [
+      {
+        $type: "Jeenee.DataTypes.ProcessNodes.RunActionNode, Jeenee.DataTypes",
+        ExprLookup: {},
+        NodeType: "RUN_ACTION",
+        Action: args.actionName,
+        InputAssignments: [],
+        StepName: "Run Action",
+        OutputTableName: null,
+        Comment: null,
+        IsValid: true,
+        Visibility: "ALWAYS",
+        DisableAutoUpdate: false,
+        ComponentId: stepNodeComponentId,
+      },
+    ],
+    ProcessStateTableName: `${processName} Process Table`,
+    UseProcessEntityNativeTable: false,
+    OutputSchema: null,
+    ExecutionId: null,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "LOCAL",
+    Id: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: processComponentId,
+    _isNew: true,
+    _version: 2,
+    _index: processes.length,
+    _path: `Behavior.AppProcesses[${processes.length}]`,
+  };
+
+  const newBot = {
+    ExprLookup: {},
+    Name: args.botName,
+    EventName: eventName,
+    ProcessName: processName,
+    CreatedBy: null,
+    AutomationPurpose: 0,
+    Disabled: args.disabled ?? false,
+    Icon: null,
+    TriggerDataChangeEvent: false,
+    TriggerDataChangeEventSync: false,
+    TriggerDataChangeEventAsync: false,
+    ExecutionId: null,
+    Id: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: botComponentId,
+    _isNew: true,
+    _version: 3,
+    _index: bots.length,
+    _path: `Behavior.AppBots[${bots.length}]`,
+  };
+
+  // 4 配列に追加（Tasks には追加しない）
+  if (!behavior.AppBots) behavior.AppBots = [];
+  if (!behavior.AppEvents) behavior.AppEvents = [];
+  if (!behavior.AppProcesses) behavior.AppProcesses = [];
+  (behavior.AppBots as Array<Record<string, unknown>>).push(newBot);
+  (behavior.AppEvents as Array<Record<string, unknown>>).push(newEvent);
+  (behavior.AppProcesses as Array<Record<string, unknown>>).push(newProcess);
+
+  const warning =
+    "Process State Table が AppSheet 側で自動生成されない場合は手動でテーブル作成が必要かも。saveapp 後に必ず Manage→Monitor で動作確認すること。";
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      botName: args.botName,
+      eventName,
+      processName,
+      warning,
+      message: `dry-run。Bot '${args.botName}' + Event '${eventName}' + Process '${processName}' を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedBots = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppBots as Array<Record<string, unknown>> | undefined;
+  const created = refreshedBots?.find((b) => b.Name === args.botName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    botName: args.botName,
+    eventName,
+    processName,
+    componentIds: { bot: botComponentId, event: eventComponentId, process: processComponentId },
+    warning,
+    message: created
+      ? `✅ Bot '${args.botName}' 作成完了（4 配列リンク済み・Tasks は別途追加可能）`
+      : `⚠️ saveapp Success だが事後検証で Bot 不在。4 配列のいずれかが拒否された可能性。`,
+  };
+}
+
+export async function addOpenUrlAction(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  actionName: string;
+  urlExpression: string;
+  condition?: string;
+  prominence?: "Display_Inline" | "Display_Prominently" | "Display_Overlay";
+  launchExternal?: boolean;
+  needsConfirmation?: boolean;
+  confirmationMessage?: string;
+  icon?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  table: string;
+  actionName: string;
+  componentId?: string;
+  message: string;
+  warning?: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const dataSets = ((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined;
+  if (!dataSets || !dataSets.find((d) => d.Name === args.tableName)) {
+    const known = (dataSets ?? []).map((d) => d.Name as string).join(", ");
+    throw new Error(`テーブル '${args.tableName}' が見つかりません。既知: ${known}`);
+  }
+
+  const actions = ((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+  if (!actions) throw new Error("AppData.DataActions が見つかりません");
+  if (actions.find((a) => a.Name === args.actionName)) {
+    throw new Error(`Action '${args.actionName}' は既に存在します`);
+  }
+
+  const url = normalizeFormula(args.urlExpression);
+  const cond = args.condition ? normalizeFormula(args.condition) : null;
+  const prominence = args.prominence ?? "Display_Inline";
+  const launchExternal = args.launchExternal ?? false;
+  const needsConfirmation = args.needsConfirmation ?? false;
+  const confirmationMessage = args.confirmationMessage ?? "";
+  const icon = args.icon ?? "fa-external-link";
+
+  let warning: string | undefined;
+  const m = args.urlExpression.match(/https?:\/\//i);
+  if (m && m[0].toLowerCase().startsWith("http://")) {
+    warning = "URL に http:// が含まれています。AppSheet モバイルでは HTTPS が推奨されます。";
+  }
+
+  const actionSettings = {
+    NavigateTarget: args.urlExpression,
+    LaunchExternal: launchExternal,
+    Prominence: prominence,
+    NeedsConfirmation: needsConfirmation,
+    ConfirmationMessage: confirmationMessage,
+    ModifiesData: false,
+    BulkApplicable: false,
+  };
+  const actionDefinition = {
+    $type: "Jeenee.DataTypes.DataActionNavigateUrl, Jeenee.DataTypes",
+    NavigateTarget: args.urlExpression,
+    LaunchExternal: launchExternal,
+    Prominence: prominence,
+    NeedsConfirmation: needsConfirmation,
+    ConfirmationMessage: confirmationMessage,
+    ModifiesData: false,
+    BulkApplicable: false,
+  };
+
+  const newAction: Record<string, unknown> = {
+    Value: url,
+    ValueEvaluatable: null,
+    ConditionEvaluatable: null,
+    ActionType: "NAVIGATE_URL",
+    ActionSettings: JSON.stringify(actionSettings),
+    IsEmbedded: false,
+    Scope: "UNSET",
+    Inputs: [],
+    Name: args.actionName,
+    DisplayName: null,
+    CreatedBy: "User",
+    Icon: icon,
+    IconRunnerUps: null,
+    Table: args.tableName,
+    TableScope: false,
+    Condition: cond,
+    ColumnToEdit: null,
+    ColumnAttachment: null,
+    ActionOrder: actions.length,
+    ActionDefinition: actionDefinition,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: generateComponentId(),
+    ExprLookup: {},
+    _isNew: true,
+    _version: 0,
+    _index: actions.length,
+    _path: `AppData.DataActions[${actions.length}]`,
+  };
+  actions.push(newAction);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      table: args.tableName,
+      actionName: args.actionName,
+      warning,
+      message: `dry-run。OpenUrl Action '${args.actionName}' を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedActions = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+  const created = refreshedActions?.find((a) => a.Name === args.actionName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    table: args.tableName,
+    actionName: args.actionName,
+    componentId: created?.ComponentId as string | undefined,
+    warning,
+    message: created
+      ? `✅ OpenUrl Action '${args.actionName}' 作成完了`
+      : `⚠️ saveapp Success だが事後検証で Action 不在`,
+  };
+}
+
+export async function promoteToRef(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  parentTableName: string;
+  isAPartOf?: boolean;
+  relationshipName?: string;
+  inputMode?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  table: string;
+  column: string;
+  parentTable: string;
+  parentKeyColumn: string;
+  parentKeyType: string;
+  before: { Type: string; TypeAuxData: unknown };
+  after?: { Type: string; TypeAuxData: unknown };
+  verified?: boolean;
+  warning?: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  // 親テーブルの Schema を取得
+  const schemas = app.AppData?.DataSchemas ?? [];
+  const parentSchema =
+    schemas.find((s) => s.AutoSchemaFrom === args.parentTableName) ??
+    schemas.find((s) => s.Name === `${args.parentTableName}_Schema`) ??
+    schemas.find((s) => s.Name === args.parentTableName);
+  if (!parentSchema) {
+    const known = schemas.map((s) => s.AutoSchemaFrom || s.Name).join(", ");
+    throw new Error(`親テーブル '${args.parentTableName}' が見つかりません。既知: ${known}`);
+  }
+
+  // 親のキー列を特定
+  const parentKey = (parentSchema.Attributes ?? []).find((a) => a.IsKey === true);
+  if (!parentKey) {
+    throw new Error(`親テーブル '${args.parentTableName}' にキー列（IsKey: true）が見つかりません`);
+  }
+
+  // 子側の対象列
+  const attr = findAttribute(app, args.tableName, args.columnName);
+  const beforeType = (attr.Type ?? "Unknown") as string;
+  const beforeAux = attr.TypeAuxData;
+
+  let parsedBeforeAux: Record<string, unknown> = {};
+  if (typeof beforeAux === "string") {
+    try {
+      parsedBeforeAux = JSON.parse(beforeAux);
+    } catch {
+      parsedBeforeAux = {};
+    }
+  } else if (beforeAux && typeof beforeAux === "object") {
+    parsedBeforeAux = { ...(beforeAux as Record<string, unknown>) };
+  }
+
+  const newAux = {
+    ReferencedTableName: args.parentTableName,
+    ReferencedRootTableName: null,
+    ReferencedType: parentKey.Type ?? "Text",
+    ReferencedTypeQualifier: null,
+    ReferencedKeyColumn: parentKey.Name,
+    IsAPartOf: args.isAPartOf ?? false,
+    RelationshipName: args.relationshipName ?? null,
+    InputMode: args.inputMode ?? "Auto",
+    Valid_If: parsedBeforeAux.Valid_If ?? null,
+    Error_Message_If_Invalid: parsedBeforeAux.Error_Message_If_Invalid ?? null,
+    Show_If: parsedBeforeAux.Show_If ?? null,
+    Required_If: parsedBeforeAux.Required_If ?? null,
+    Editable_If: parsedBeforeAux.Editable_If ?? null,
+    Reset_If: parsedBeforeAux.Reset_If ?? null,
+    Suggested_Values: parsedBeforeAux.Suggested_Values ?? null,
+  };
+
+  attr.Type = "Ref";
+  attr.TypeAuxData = JSON.stringify(newAux);
+
+  // 既存値の互換性をざっくり警告
+  let warning: string | undefined;
+  if (beforeType !== "Text" && beforeType !== "Ref") {
+    warning = `'${beforeType}' → 'Ref' は安全リスト外。既存データが '${parentKey.Name}' (${parentKey.Type}) に対する有効値でないと "Invalid value" になります。事前にデータクレンジングを推奨。`;
+  }
+
+  const before = { Type: beforeType, TypeAuxData: beforeAux };
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      table: args.tableName,
+      column: args.columnName,
+      parentTable: args.parentTableName,
+      parentKeyColumn: parentKey.Name as string,
+      parentKeyType: (parentKey.Type ?? "Text") as string,
+      before,
+      warning,
+      message: "dry-run。apply: true で送信。",
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
+  const after = { Type: (refreshedAttr.Type ?? "Unknown") as string, TypeAuxData: refreshedAttr.TypeAuxData };
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  let verified = after.Type === "Ref";
+  if (verified && typeof after.TypeAuxData === "string") {
+    try {
+      const aux = JSON.parse(after.TypeAuxData) as Record<string, unknown>;
+      verified = aux.ReferencedTableName === args.parentTableName && aux.ReferencedKeyColumn === parentKey.Name;
+    } catch {
+      verified = false;
+    }
+  }
+
+  return {
+    dryRun: false,
+    applied: true,
+    table: args.tableName,
+    column: args.columnName,
+    parentTable: args.parentTableName,
+    parentKeyColumn: parentKey.Name as string,
+    parentKeyType: (parentKey.Type ?? "Text") as string,
+    before,
+    after,
+    verified,
+    warning,
+    message: verified ? "✅ Ref 化完了" : "⚠️ Ref 化したが verify 失敗。AppSheet 側で型変換が拒否された可能性。",
+  };
+}
+
+// Security Filter 式が「対象テーブルの仮想列」を直接参照していないかチェック。
+// Security Filter は実カラム式のみ評価される（spec.md §7.1）。
+// 別テーブル参照（ANY(別表[列]) や LOOKUP）はサーバ側で実列のみ評価可能なので OK。
+// このチェックは「対象テーブル直下の [列名] が仮想列でないか」を見る。
+function detectVirtualColsInFilter(
+  filterExpr: string,
+  targetTableSchema: { Attributes?: Array<Record<string, unknown>> } | undefined,
+): string[] {
+  if (!filterExpr || !targetTableSchema?.Attributes) return [];
+  const virtualCols = new Set<string>();
+  for (const a of targetTableSchema.Attributes) {
+    if (a.IsVirtual === true && typeof a.Name === "string") virtualCols.add(a.Name);
+  }
+  if (virtualCols.size === 0) return [];
+
+  // [列名] パターンを抽出。[テーブル名][列名] のような連続形は除外
+  // (?<![\]\w]) ... 直前が ] または \w だと別テーブル参照とみなす
+  const matches = filterExpr.matchAll(/(?<![\]\w])\[([^\[\]]+)\]/g);
+  const found: string[] = [];
+  for (const m of matches) {
+    if (virtualCols.has(m[1])) found.push(m[1]);
+  }
+  return [...new Set(found)];
+}
+
+export async function setSecurityFilter(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  filter: string;
+  apply?: boolean;
+  allowVirtualCols?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  tableName: string;
+  before: string | null;
+  requested: string | null;
+  after?: string | null;
+  verified?: boolean;
+  warning?: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const dataSets = ((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined;
+  if (!dataSets) throw new Error("DataSets 不明");
+  const ds = dataSets.find((d) => d.Name === args.tableName);
+  if (!ds) {
+    const known = dataSets.map((d) => d.Name as string).join(", ");
+    throw new Error(`テーブル '${args.tableName}' が見つかりません。既知: ${known}`);
+  }
+
+  // 対象テーブルの Schema を取得して仮想列を確認
+  const schemas = app.AppData?.DataSchemas ?? [];
+  const targetSchema =
+    schemas.find((s) => s.AutoSchemaFrom === args.tableName) ??
+    schemas.find((s) => s.Name === `${args.tableName}_Schema`) ??
+    schemas.find((s) => s.Name === args.tableName);
+
+  const virtualColsInFilter = detectVirtualColsInFilter(args.filter, targetSchema);
+  if (virtualColsInFilter.length > 0 && !args.allowVirtualCols) {
+    throw new Error(
+      `Security Filter 式に対象テーブルの仮想列が含まれています: [${virtualColsInFilter.join("], [")}]。Security Filter はサーバ側で実列のみ評価されるので、仮想列を使うと絞り込みが機能しません（spec.md §7.1）。実列に書き換えるか、明示的に許可する場合は allowVirtualCols: true を指定してください。`,
+    );
+  }
+  const warning =
+    virtualColsInFilter.length > 0
+      ? `仮想列 [${virtualColsInFilter.join("], [")}] が含まれています（allowVirtualCols: true により許可）。サーバ側で評価できず絞り込みが機能しない可能性があります。`
+      : undefined;
+
+  const before = (ds.DataFilter ?? extractEvalSource(ds.DataFilterEvaluatable as Evaluatable | null | undefined)) as string | null;
+  const trimmed = args.filter.trim();
+  const newFilter: string | null = trimmed === "" ? null : normalizeFormula(trimmed);
+
+  ds.DataFilter = newFilter;
+  ds.DataFilterEvaluatable = null;
+
+  if (before === newFilter) {
+    return {
+      dryRun: !args.apply,
+      applied: false,
+      tableName: args.tableName,
+      before,
+      requested: newFilter,
+      warning,
+      message: "変更不要",
+    };
+  }
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      tableName: args.tableName,
+      before,
+      requested: newFilter,
+      warning,
+      message: "dry-run。apply: true で実際送信。Security Filter は実カラム式のみ評価される（仮想列・dereference は使用不可）。",
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedDs = (((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined)?.find((d) => d.Name === args.tableName);
+  const after = (refreshedDs?.DataFilter ?? extractEvalSource(refreshedDs?.DataFilterEvaluatable as Evaluatable | null | undefined)) as string | null;
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: true,
+    tableName: args.tableName,
+    before,
+    requested: newFilter,
+    after,
+    verified: after === newFilter,
+    warning,
+    message: after === newFilter ? "✅ Security Filter 更新完了" : `⚠️ 期待 '${newFilter}' だが現在 '${after}'。複雑式は再パースされない可能性。`,
+  };
+}
