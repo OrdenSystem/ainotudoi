@@ -1538,6 +1538,142 @@ export async function setColumnDescription(args: {
   };
 }
 
+export async function addOpenUrlAction(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  actionName: string;
+  urlExpression: string;
+  condition?: string;
+  prominence?: "Display_Inline" | "Display_Prominently" | "Display_Overlay";
+  launchExternal?: boolean;
+  needsConfirmation?: boolean;
+  confirmationMessage?: string;
+  icon?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  table: string;
+  actionName: string;
+  componentId?: string;
+  message: string;
+  warning?: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const dataSets = ((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined;
+  if (!dataSets || !dataSets.find((d) => d.Name === args.tableName)) {
+    const known = (dataSets ?? []).map((d) => d.Name as string).join(", ");
+    throw new Error(`テーブル '${args.tableName}' が見つかりません。既知: ${known}`);
+  }
+
+  const actions = ((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+  if (!actions) throw new Error("AppData.DataActions が見つかりません");
+  if (actions.find((a) => a.Name === args.actionName)) {
+    throw new Error(`Action '${args.actionName}' は既に存在します`);
+  }
+
+  const url = normalizeFormula(args.urlExpression);
+  const cond = args.condition ? normalizeFormula(args.condition) : null;
+  const prominence = args.prominence ?? "Display_Inline";
+  const launchExternal = args.launchExternal ?? false;
+  const needsConfirmation = args.needsConfirmation ?? false;
+  const confirmationMessage = args.confirmationMessage ?? "";
+  const icon = args.icon ?? "fa-external-link";
+
+  let warning: string | undefined;
+  const m = args.urlExpression.match(/https?:\/\//i);
+  if (m && m[0].toLowerCase().startsWith("http://")) {
+    warning = "URL に http:// が含まれています。AppSheet モバイルでは HTTPS が推奨されます。";
+  }
+
+  const actionSettings = {
+    NavigateTarget: args.urlExpression,
+    LaunchExternal: launchExternal,
+    Prominence: prominence,
+    NeedsConfirmation: needsConfirmation,
+    ConfirmationMessage: confirmationMessage,
+    ModifiesData: false,
+    BulkApplicable: false,
+  };
+  const actionDefinition = {
+    $type: "Jeenee.DataTypes.DataActionNavigateUrl, Jeenee.DataTypes",
+    NavigateTarget: args.urlExpression,
+    LaunchExternal: launchExternal,
+    Prominence: prominence,
+    NeedsConfirmation: needsConfirmation,
+    ConfirmationMessage: confirmationMessage,
+    ModifiesData: false,
+    BulkApplicable: false,
+  };
+
+  const newAction: Record<string, unknown> = {
+    Value: url,
+    ValueEvaluatable: null,
+    ConditionEvaluatable: null,
+    ActionType: "NAVIGATE_URL",
+    ActionSettings: JSON.stringify(actionSettings),
+    IsEmbedded: false,
+    Scope: "UNSET",
+    Inputs: [],
+    Name: args.actionName,
+    DisplayName: null,
+    CreatedBy: "User",
+    Icon: icon,
+    IconRunnerUps: null,
+    Table: args.tableName,
+    TableScope: false,
+    Condition: cond,
+    ColumnToEdit: null,
+    ColumnAttachment: null,
+    ActionOrder: actions.length,
+    ActionDefinition: actionDefinition,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: generateComponentId(),
+    ExprLookup: {},
+    _isNew: true,
+    _version: 0,
+    _index: actions.length,
+    _path: `AppData.DataActions[${actions.length}]`,
+  };
+  actions.push(newAction);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      table: args.tableName,
+      actionName: args.actionName,
+      warning,
+      message: `dry-run。OpenUrl Action '${args.actionName}' を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedActions = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+  const created = refreshedActions?.find((a) => a.Name === args.actionName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    table: args.tableName,
+    actionName: args.actionName,
+    componentId: created?.ComponentId as string | undefined,
+    warning,
+    message: created
+      ? `✅ OpenUrl Action '${args.actionName}' 作成完了`
+      : `⚠️ saveapp Success だが事後検証で Action 不在`,
+  };
+}
+
 export async function promoteToRef(args: {
   appId?: string;
   appName?: string;

@@ -56,6 +56,7 @@ import {
   removeTable,
   setSecurityFilter,
   promoteToRef,
+  addOpenUrlAction,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -619,6 +620,42 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_openurl_action",
+    description:
+      "OpenUrl (NAVIGATE_URL) 系 Action を新規追加する。外部 WebApp や HTTPS URL に遷移するボタン用。URL 式は CONCATENATE で動的組立可能。HTTP は警告。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string", description: "対象テーブル名" },
+        actionName: { type: "string", description: "Action 名（アプリ内一意）" },
+        urlExpression: {
+          type: "string",
+          description: 'URL 式。例: \'CONCATENATE("https://example.com/?id=", ENCODEURL([案件ID]))\'',
+        },
+        condition: {
+          type: "string",
+          description: "実行可否条件式（任意）。例: 'NOT(ISBLANK([URL]))'",
+        },
+        prominence: {
+          type: "string",
+          enum: ["Display_Inline", "Display_Prominently", "Display_Overlay"],
+          description: "表示位置。デフォルト Display_Inline",
+        },
+        launchExternal: {
+          type: "boolean",
+          description: "true で外部ブラウザで開く。デフォルト false（内蔵ビューア）",
+        },
+        needsConfirmation: { type: "boolean", description: "実行時に確認ダイアログ。デフォルト false" },
+        confirmationMessage: { type: "string" },
+        icon: { type: "string", description: "FontAwesome アイコン名。デフォルト fa-external-link" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName", "urlExpression"],
+    },
+  },
+  {
     name: "appsheet_promote_to_ref",
     description:
       "テキスト型の親キー列を Ref 型に格上げする。親テーブルのキー列を自動検出し、TypeAuxData の ReferencedTableName / ReferencedKeyColumn / ReferencedType / IsAPartOf 等を組み立てる。dereference や REF_ROWS が使えるようになる。デフォルト dry-run。",
@@ -751,6 +788,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
     case "appsheet_promote_to_ref":
       return promoteToRef(args as Parameters<typeof promoteToRef>[0]);
+    case "appsheet_add_openurl_action":
+      return addOpenUrlAction(args as Parameters<typeof addOpenUrlAction>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }
