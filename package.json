@@ -21,7 +21,8 @@
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
-    "prepare": "tsc"
+    "prepare": "tsc",
+    "setup": "node scripts/setup.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
