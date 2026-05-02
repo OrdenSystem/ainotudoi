@@ -62,6 +62,7 @@ import {
   removeSlice,
   addCallScriptTask,
   createTable,
+  createView,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -625,6 +626,42 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_create_view",
+    description:
+      "View (Presentation.Controls の要素) を新規作成する。現在対応: table / card。viewType ごとに ViewDefinition の $type と固有設定が分岐。Settings (JSON 文字列) と ViewDefinition (オブジェクト) を両方構築。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        viewName: { type: "string", description: "View 名（アプリ内一意）" },
+        tableName: { type: "string", description: "対象テーブル or Slice 名" },
+        viewType: {
+          type: "string",
+          enum: ["table", "card"],
+          description: "View タイプ。現在対応は table / card のみ。他タイプは HAR 取得後に追加予定。",
+        },
+        position: {
+          type: "string",
+          enum: ["primary", "menu", "ref", "none"],
+          description: "表示位置。デフォルト menu",
+        },
+        showIf: {
+          type: "string",
+          description: "表示条件式（任意）。例: 'USEREMAIL() = \"admin@example.com\"'",
+        },
+        icon: { type: "string", description: "FontAwesome アイコン名。デフォルト fa-list-ul" },
+        menuOrder: { type: "number", description: "メニュー内の並び順。デフォルト 1" },
+        options: {
+          type: "object",
+          description: "viewType 別の固有設定。table: {columnWidth, enableQuickEdit, columnOrder}。card: {imageShape, mainDeckImageColumn, primaryDeckHeaderColumn, secondaryDeckHeaderColumn, deckSummaryColumn, showActionBar}",
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["viewName", "tableName", "viewType"],
+    },
+  },
+  {
     name: "appsheet_create_table",
     description:
       "既存データソースの別シート/SQL テーブルを AppSheet に取り込む（DataSet 1 件追加・Schema は AppSheet 側で自動生成）。テンプレ既存テーブルからデータソース接続情報をコピー。SourceQualifier はデータソース上のシート名や SQL テーブル名。新規データソース接続は GUI 必須でこのツールでは扱えない。デフォルト dry-run。",
@@ -947,6 +984,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addCallScriptTask(args as Parameters<typeof addCallScriptTask>[0]);
     case "appsheet_create_table":
       return createTable(args as Parameters<typeof createTable>[0]);
+    case "appsheet_create_view":
+      return createView(args as Parameters<typeof createView>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }

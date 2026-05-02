@@ -1664,6 +1664,177 @@ export async function createTable(args: {
   };
 }
 
+export async function createView(args: {
+  appId?: string;
+  appName?: string;
+  viewName: string;
+  tableName: string;
+  viewType: "table" | "card";
+  position?: "primary" | "menu" | "ref" | "none";
+  showIf?: string;
+  icon?: string;
+  menuOrder?: number;
+  options?: {
+    // table 固有
+    columnWidth?: "Default" | "Auto" | "Wide" | "Compact";
+    enableQuickEdit?: boolean;
+    columnOrder?: string[];
+    // card 固有
+    imageShape?: "Square Image" | "Circle Image" | "Rectangle Image";
+    mainDeckImageColumn?: string;
+    primaryDeckHeaderColumn?: string;
+    secondaryDeckHeaderColumn?: string;
+    deckSummaryColumn?: string;
+    deckNestedTableColumn?: string | null;
+    showActionBar?: boolean;
+    layout?: string | null;
+  };
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  viewName: string;
+  tableName: string;
+  viewType: string;
+  componentId?: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const presentation = (app as Record<string, unknown>).Presentation as Record<string, unknown> | undefined;
+  if (!presentation) throw new Error("Presentation が見つかりません");
+  const controls = (presentation.Controls as Array<Record<string, unknown>> | undefined) ?? [];
+
+  if (controls.find((v) => v.Name === args.viewName)) {
+    throw new Error(`View '${args.viewName}' は既に存在します`);
+  }
+
+  // テーブル or Slice 存在確認
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  const slices = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.TableSlices as Array<Record<string, unknown>> | undefined) ?? [];
+  const tableExists = dataSets.find((d) => d.Name === args.tableName) || slices.find((s) => s.Name === args.tableName);
+  if (!tableExists) {
+    throw new Error(`テーブル/Slice '${args.tableName}' が見つかりません`);
+  }
+
+  const position = args.position ?? "menu";
+  const icon = args.icon ?? "fa-list-ul";
+  const menuOrder = args.menuOrder ?? 1;
+  const showIf = args.showIf ? normalizeFormula(args.showIf) : null;
+
+  // タイプ別 ViewDefinition / Settings を構築
+  let viewDefinition: Record<string, unknown>;
+  if (args.viewType === "table") {
+    const opts = args.options ?? {};
+    viewDefinition = {
+      $type: "Jeenee.DataTypes.TableViewSettings, Jeenee.DataTypes",
+      ColumnWidth: opts.columnWidth ?? "Default",
+      EnableQuickEdit: opts.enableQuickEdit ?? false,
+      ColumnOrder: opts.columnOrder ?? [],
+      GroupBy: [],
+      GroupAggregate: "NONE",
+      SortBy: [],
+      PrimarySortColumn: null,
+      IsPrimarySortDescending: false,
+      Events: [{ EventType: "Row Selected", EventAction: "**auto**" }],
+      Icon: icon,
+      IconRunnerUps: null,
+      MenuOrder: menuOrder,
+    };
+  } else if (args.viewType === "card") {
+    const opts = args.options ?? {};
+    viewDefinition = {
+      $type: "Jeenee.DataTypes.CardViewSettings, Jeenee.DataTypes",
+      Layout: opts.layout ?? null,
+      MainDeckImageColumn: opts.mainDeckImageColumn ?? "**auto**",
+      ImageShape: opts.imageShape ?? "Square Image",
+      PrimaryDeckHeaderColumn: opts.primaryDeckHeaderColumn ?? "**auto**",
+      SecondaryDeckHeaderColumn: opts.secondaryDeckHeaderColumn ?? "**auto**",
+      DeckSummaryColumn: opts.deckSummaryColumn ?? "**auto**",
+      DeckNestedTableColumn: opts.deckNestedTableColumn ?? null,
+      ShowActionBar: opts.showActionBar ?? true,
+      ActionColumns: [],
+      ActionBarEntries: null,
+      GroupBy: [],
+      GroupAggregate: "NONE",
+      SortBy: [],
+      PrimarySortColumn: null,
+      IsPrimarySortDescending: false,
+      Events: [],
+      Icon: icon,
+      IconRunnerUps: null,
+      MenuOrder: menuOrder,
+    };
+  } else {
+    throw new Error(`未対応の viewType: '${args.viewType}'。現在対応: table / card`);
+  }
+
+  const settings = JSON.stringify(viewDefinition);
+  const componentId = generateComponentId();
+
+  const newView: Record<string, unknown> = {
+    ExprLookup: {},
+    Name: args.viewName,
+    DisplayName: null,
+    ShowIf: showIf,
+    TableOrFolderName: args.tableName,
+    Action: args.viewType,
+    Position: position,
+    Description: null,
+    ActionType: null,
+    Parameters: [],
+    Settings: settings,
+    ViewDefinition: viewDefinition,
+    CreatedBy: "User",
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: componentId,
+    _isCopy: false,
+    _isNew: true,
+    _version: args.viewType === "table" ? 3 : 2,
+    _index: controls.length,
+    _path: `Presentation.Controls[${controls.length}]`,
+    _isSystemGenerated: false,
+    _isMinor: false,
+  };
+
+  if (!presentation.Controls) presentation.Controls = [];
+  (presentation.Controls as Array<Record<string, unknown>>).push(newView);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      viewName: args.viewName,
+      tableName: args.tableName,
+      viewType: args.viewType,
+      message: `dry-run。${args.viewType} View '${args.viewName}' (table: '${args.tableName}', position: ${position}) を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedControls = ((refreshed as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  const created = refreshedControls?.find((v) => v.Name === args.viewName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    viewName: args.viewName,
+    tableName: args.tableName,
+    viewType: args.viewType,
+    componentId,
+    message: created
+      ? `✅ ${args.viewType} View '${args.viewName}' 作成完了`
+      : `⚠️ saveapp Success だが事後検証で View 不在`,
+  };
+}
+
 export async function addCallScriptTask(args: {
   appId?: string;
   appName?: string;

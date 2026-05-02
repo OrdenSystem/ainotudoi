@@ -614,30 +614,38 @@ AppBots[]       Bot 本体（名前・有効/無効・EventName・ProcessName）
 |-----------|------|
 | `Name`, `DisplayName` | View 名・表示名 |
 | `TableOrFolderName` | 対象テーブル / Slice |
-| `ActionType` | View タイプ（次表） |
+| `Action` | **View タイプ**（`"table"` / `"card"` / `"detail"` 等の小文字文字列） |
+| `ActionType` | 通常 `null`（Action 系のフィールド名と紛らわしいが、View では未使用） |
 | `Position` | 表示位置（`primary` / `menu` / `ref` / `none`） |
 | `ShowIf` | 表示条件式（USEREMAIL() で出し分け等） |
-| `ViewDefinition` | View タイプ固有の詳細設定 |
-| `Settings` | 共通設定 |
+| `Settings` | View タイプ固有設定の **JSON 文字列**（`$type` 含む） |
+| `ViewDefinition` | Settings と同じ内容を**オブジェクトで保持**（送信時は両方更新） |
 | `Parameters` | パラメータ（一部 View タイプで使用） |
 
-### 6.2 View タイプ (`ActionType`)
+### 6.2 View タイプ (`Action` フィールドの値)
 
-| ActionType | 用途 |
-|-----------|------|
-| `table` | テーブル一覧 |
-| `deck` | カード一覧 |
-| `gallery` | サムネ一覧 |
-| `detail` | 詳細表示 |
-| `form` | 入力フォーム |
-| `dashboard` | 複数 View の組合せ表示 |
-| `onboarding` | オンボーディング |
-| `chart` | グラフ |
-| `calendar` | カレンダー |
-| `map` | 地図 |
-| `gantt` | ガント |
-| `card` | カード詳細 |
-| `kanban` | カンバン |
+| Action 値 | $type (Settings/ViewDefinition) | 用途 |
+|----------|--------------------------------|------|
+| `table` | `TableViewSettings` | テーブル一覧 |
+| `deck` | `DeckViewSettings` | カード一覧 |
+| `gallery` | `GalleryViewSettings` | サムネ一覧 |
+| `detail` | `DetailViewSettings` | 詳細表示 |
+| `form` | `FormViewSettings` | 入力フォーム |
+| `dashboard` | `DashboardViewSettings` | 複数 View の組合せ表示 |
+| `onboarding` | `OnboardingViewSettings` | オンボーディング |
+| `chart` | `ChartViewSettings` | グラフ |
+| `calendar` | `CalendarViewSettings` | カレンダー |
+| `map` | `MapViewSettings` | 地図 |
+| `gantt` | `GanttViewSettings` | ガント |
+| `card` | `CardViewSettings` | カード詳細 |
+| `kanban` | `KanbanViewSettings` | カンバン |
+
+**実装注意**:
+
+- View タイプは `Action` フィールド（小文字文字列）に格納される。`ActionType` は通常 null
+- `Settings` (JSON 文字列) と `ViewDefinition` (オブジェクト) は**同内容を二重に持つ**。saveapp 送信時は両方更新する
+- 全タイプ共通フィールド: `MenuOrder`, `Icon`, `IconRunnerUps`, `GroupBy`, `GroupAggregate`, `SortBy`, `PrimarySortColumn`, `IsPrimarySortDescending`, `Events`
+- タイプ固有フィールドは `$type` ごとに異なる（例: `TableViewSettings.ColumnWidth` / `CardViewSettings.MainDeckImageColumn` 等）
 
 ### 6.3 MenuEntries
 
