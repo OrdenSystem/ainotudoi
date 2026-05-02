@@ -322,12 +322,12 @@ Presentation
 | フィールド | 用途 |
 |-----------|------|
 | `Name` | Slice 名 |
-| `SourceTableName` | 元テーブル |
-| `RowFilterCondition`, `RowFilterEvaluatable` | 行フィルタ式 |
+| `SourceTable` | 元テーブル名 |
+| `FilterCondition`, `FilterEvaluatable` | 行フィルタ式（`=` プレフィックス必須） |
 | `Columns` | 公開する列のサブセット（順序付き） |
-| `SliceActions` | Slice で使える Action のサブセット |
-| `IsBaseSlice` | ベース Slice か派生か |
-| `UpdateMode` | 編集権限 |
+| `Actions` | 使える Action 名の配列。`["**auto**"]` で全 Action 自動継承 |
+| `AllowedUpdates` | 数値（0 = テンプレ継承） |
+| `UpdateMode` | 数値（7 = テンプレ継承） |
 
 Slice の使い分けは Security Filter とは別レイヤ。Slice は **クライアント評価**で、データは全件ダウンロードされた上で表示時にフィルタされる。データ秘匿目的では使えない（→ §7）。
 
@@ -344,7 +344,7 @@ Slice の使い分けは Security Filter とは別レイヤ。Slice は **クラ
 | **Initial Value** | `Column.DefaultExpression` | 行追加時 1 回 |
 | **Show_If / Required_If / Valid_If / Editable_If / Reset_If** | `Column.TypeAuxData.*` | フォーム描画時 |
 | **Action Condition / Value** | `Action.Condition`, `Action.Value` | アクション実行判定時 |
-| **Slice RowFilter** | `Slice.RowFilterCondition` | データ同期後・クライアント側 |
+| **Slice Filter** | `Slice.FilterCondition` | データ同期後・クライアント側 |
 | **Security Filter** | `DataSet.DataFilter` | サーバ側・**実カラムのみ** |
 | **Bot Event Condition** | `Event.Condition` | データ変更検知時 |
 
