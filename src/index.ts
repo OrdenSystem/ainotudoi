@@ -55,6 +55,7 @@ import {
   cloneTable,
   removeTable,
   setSecurityFilter,
+  promoteToRef,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -618,6 +619,32 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_promote_to_ref",
+    description:
+      "テキスト型の親キー列を Ref 型に格上げする。親テーブルのキー列を自動検出し、TypeAuxData の ReferencedTableName / ReferencedKeyColumn / ReferencedType / IsAPartOf 等を組み立てる。dereference や REF_ROWS が使えるようになる。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string", description: "子テーブル名（Ref 化対象列を持つテーブル）" },
+        columnName: { type: "string", description: "Ref 化する列名（既存値は親キーと整合している必要あり）" },
+        parentTableName: { type: "string", description: "参照先（親）テーブル名" },
+        isAPartOf: {
+          type: "boolean",
+          description: "is-a-part-of 親子関係。true で親削除時に子も連鎖削除。デフォルト false",
+        },
+        relationshipName: { type: "string" },
+        inputMode: {
+          type: "string",
+          description: "Auto / Buttons / Stack / Dropdown 等。デフォルト Auto",
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "parentTableName"],
+    },
+  },
+  {
     name: "appsheet_set_security_filter",
     description:
       "テーブルの Security Filter (DataSet.DataFilter) を設定する。サーバ側で評価されデータ秘匿に使える。空文字を渡すとフィルタ削除。実カラム式のみ評価される（仮想列・dereference は不可）。デフォルト dry-run。",
@@ -722,6 +749,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
     case "appsheet_set_security_filter":
       return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
+    case "appsheet_promote_to_ref":
+      return promoteToRef(args as Parameters<typeof promoteToRef>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }

@@ -1538,6 +1538,143 @@ export async function setColumnDescription(args: {
   };
 }
 
+export async function promoteToRef(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  parentTableName: string;
+  isAPartOf?: boolean;
+  relationshipName?: string;
+  inputMode?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  table: string;
+  column: string;
+  parentTable: string;
+  parentKeyColumn: string;
+  parentKeyType: string;
+  before: { Type: string; TypeAuxData: unknown };
+  after?: { Type: string; TypeAuxData: unknown };
+  verified?: boolean;
+  warning?: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  // 親テーブルの Schema を取得
+  const schemas = app.AppData?.DataSchemas ?? [];
+  const parentSchema =
+    schemas.find((s) => s.AutoSchemaFrom === args.parentTableName) ??
+    schemas.find((s) => s.Name === `${args.parentTableName}_Schema`) ??
+    schemas.find((s) => s.Name === args.parentTableName);
+  if (!parentSchema) {
+    const known = schemas.map((s) => s.AutoSchemaFrom || s.Name).join(", ");
+    throw new Error(`親テーブル '${args.parentTableName}' が見つかりません。既知: ${known}`);
+  }
+
+  // 親のキー列を特定
+  const parentKey = (parentSchema.Attributes ?? []).find((a) => a.IsKey === true);
+  if (!parentKey) {
+    throw new Error(`親テーブル '${args.parentTableName}' にキー列（IsKey: true）が見つかりません`);
+  }
+
+  // 子側の対象列
+  const attr = findAttribute(app, args.tableName, args.columnName);
+  const beforeType = (attr.Type ?? "Unknown") as string;
+  const beforeAux = attr.TypeAuxData;
+
+  let parsedBeforeAux: Record<string, unknown> = {};
+  if (typeof beforeAux === "string") {
+    try {
+      parsedBeforeAux = JSON.parse(beforeAux);
+    } catch {
+      parsedBeforeAux = {};
+    }
+  } else if (beforeAux && typeof beforeAux === "object") {
+    parsedBeforeAux = { ...(beforeAux as Record<string, unknown>) };
+  }
+
+  const newAux = {
+    ReferencedTableName: args.parentTableName,
+    ReferencedRootTableName: null,
+    ReferencedType: parentKey.Type ?? "Text",
+    ReferencedTypeQualifier: null,
+    ReferencedKeyColumn: parentKey.Name,
+    IsAPartOf: args.isAPartOf ?? false,
+    RelationshipName: args.relationshipName ?? null,
+    InputMode: args.inputMode ?? "Auto",
+    Valid_If: parsedBeforeAux.Valid_If ?? null,
+    Error_Message_If_Invalid: parsedBeforeAux.Error_Message_If_Invalid ?? null,
+    Show_If: parsedBeforeAux.Show_If ?? null,
+    Required_If: parsedBeforeAux.Required_If ?? null,
+    Editable_If: parsedBeforeAux.Editable_If ?? null,
+    Reset_If: parsedBeforeAux.Reset_If ?? null,
+    Suggested_Values: parsedBeforeAux.Suggested_Values ?? null,
+  };
+
+  attr.Type = "Ref";
+  attr.TypeAuxData = JSON.stringify(newAux);
+
+  // 既存値の互換性をざっくり警告
+  let warning: string | undefined;
+  if (beforeType !== "Text" && beforeType !== "Ref") {
+    warning = `'${beforeType}' → 'Ref' は安全リスト外。既存データが '${parentKey.Name}' (${parentKey.Type}) に対する有効値でないと "Invalid value" になります。事前にデータクレンジングを推奨。`;
+  }
+
+  const before = { Type: beforeType, TypeAuxData: beforeAux };
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      table: args.tableName,
+      column: args.columnName,
+      parentTable: args.parentTableName,
+      parentKeyColumn: parentKey.Name as string,
+      parentKeyType: (parentKey.Type ?? "Text") as string,
+      before,
+      warning,
+      message: "dry-run。apply: true で送信。",
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
+  const after = { Type: (refreshedAttr.Type ?? "Unknown") as string, TypeAuxData: refreshedAttr.TypeAuxData };
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  let verified = after.Type === "Ref";
+  if (verified && typeof after.TypeAuxData === "string") {
+    try {
+      const aux = JSON.parse(after.TypeAuxData) as Record<string, unknown>;
+      verified = aux.ReferencedTableName === args.parentTableName && aux.ReferencedKeyColumn === parentKey.Name;
+    } catch {
+      verified = false;
+    }
+  }
+
+  return {
+    dryRun: false,
+    applied: true,
+    table: args.tableName,
+    column: args.columnName,
+    parentTable: args.parentTableName,
+    parentKeyColumn: parentKey.Name as string,
+    parentKeyType: (parentKey.Type ?? "Text") as string,
+    before,
+    after,
+    verified,
+    warning,
+    message: verified ? "✅ Ref 化完了" : "⚠️ Ref 化したが verify 失敗。AppSheet 側で型変換が拒否された可能性。",
+  };
+}
+
 export async function setSecurityFilter(args: {
   appId?: string;
   appName?: string;
