@@ -1538,6 +1538,223 @@ export async function setColumnDescription(args: {
   };
 }
 
+export async function createBot(args: {
+  appId?: string;
+  appName?: string;
+  botName: string;
+  tableName: string;
+  actionName: string;
+  eventType?: "ADDS_ONLY" | "UPDATES_ONLY" | "DELETES_ONLY" | "ADDS_AND_UPDATES" | "ADDS_UPDATES_DELETES";
+  filterCondition?: string;
+  disabled?: boolean;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  botName: string;
+  eventName: string;
+  processName: string;
+  componentIds?: { bot: string; event: string; process: string };
+  message: string;
+  warning?: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+
+  const bots = (behavior.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+  const events = (behavior.AppEvents as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+
+  if (bots.find((b) => b.Name === args.botName)) {
+    throw new Error(`Bot '${args.botName}' は既に存在します`);
+  }
+
+  // 対象 Action の存在確認
+  const dataActions = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetAction = dataActions.find((a) => a.Name === args.actionName && a.Table === args.tableName);
+  if (!targetAction) {
+    throw new Error(`Action '${args.actionName}' (Table: '${args.tableName}') が見つかりません`);
+  }
+
+  // 対象テーブルの Schema 名を解決
+  const schemas = app.AppData?.DataSchemas ?? [];
+  const schema =
+    schemas.find((s) => s.AutoSchemaFrom === args.tableName) ??
+    schemas.find((s) => s.Name === `${args.tableName}_Schema`) ??
+    schemas.find((s) => s.Name === args.tableName);
+  if (!schema) {
+    throw new Error(`テーブル '${args.tableName}' の Schema が見つかりません`);
+  }
+  const schemaName = schema.Name;
+
+  const eventName = args.botName.replace(/^_+/, "") + "_event";
+  const processName = `Process for ${args.botName}`;
+
+  if (events.find((e) => e.Name === eventName)) {
+    throw new Error(`Event '${eventName}' は既に存在します（Bot 名から自動生成された名前）。別の Bot 名にしてください`);
+  }
+  if (processes.find((p) => p.Name === processName)) {
+    throw new Error(`Process '${processName}' は既に存在します`);
+  }
+
+  const eventType = args.eventType ?? "ADDS_AND_UPDATES";
+  const filterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : "=TRUE";
+
+  // Step Action ノードの ComponentId
+  const stepNodeComponentId = generateComponentId();
+  const eventDefComponentId = generateComponentId();
+  const eventComponentId = generateComponentId();
+  const processComponentId = generateComponentId();
+  const botComponentId = generateComponentId();
+
+  const newEvent = {
+    ExprLookup: {},
+    Name: eventName,
+    EventType: "Change",
+    AppEventDefinition: {
+      $type: "Jeenee.DataTypes.AppChangeEventDefinition, Jeenee.DataTypes",
+      ExprLookup: {},
+      ChangeEvent: eventType,
+      SchemaName: schemaName,
+      IsValid: true,
+      Visibility: "ALWAYS",
+      DisableAutoUpdate: false,
+      ComponentId: eventDefComponentId,
+    },
+    FilterCondition: filterCondition,
+    Disabled: false,
+    CreatedBy: null,
+    AutomationPurpose: 0,
+    AssociatedStepName: null,
+    ExecutionId: null,
+    IgnoreSecurityFilters: false,
+    Id: null,
+    Icon: null,
+    IsEmbedded: false,
+    Scope: "LOCAL",
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: eventComponentId,
+    _isNew: true,
+    _version: 6,
+    _index: events.length,
+    _path: `Behavior.AppEvents[${events.length}]`,
+  };
+
+  const newProcess = {
+    ExprLookup: {},
+    Name: processName,
+    InputSchemaName: schemaName,
+    Icon: null,
+    Nodes: [
+      {
+        $type: "Jeenee.DataTypes.ProcessNodes.RunActionNode, Jeenee.DataTypes",
+        ExprLookup: {},
+        NodeType: "RUN_ACTION",
+        Action: args.actionName,
+        InputAssignments: [],
+        StepName: "Run Action",
+        OutputTableName: null,
+        Comment: null,
+        IsValid: true,
+        Visibility: "ALWAYS",
+        DisableAutoUpdate: false,
+        ComponentId: stepNodeComponentId,
+      },
+    ],
+    ProcessStateTableName: `${processName} Process Table`,
+    UseProcessEntityNativeTable: false,
+    OutputSchema: null,
+    ExecutionId: null,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "LOCAL",
+    Id: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: processComponentId,
+    _isNew: true,
+    _version: 2,
+    _index: processes.length,
+    _path: `Behavior.AppProcesses[${processes.length}]`,
+  };
+
+  const newBot = {
+    ExprLookup: {},
+    Name: args.botName,
+    EventName: eventName,
+    ProcessName: processName,
+    CreatedBy: null,
+    AutomationPurpose: 0,
+    Disabled: args.disabled ?? false,
+    Icon: null,
+    TriggerDataChangeEvent: false,
+    TriggerDataChangeEventSync: false,
+    TriggerDataChangeEventAsync: false,
+    ExecutionId: null,
+    Id: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: botComponentId,
+    _isNew: true,
+    _version: 3,
+    _index: bots.length,
+    _path: `Behavior.AppBots[${bots.length}]`,
+  };
+
+  // 4 配列に追加（Tasks には追加しない）
+  if (!behavior.AppBots) behavior.AppBots = [];
+  if (!behavior.AppEvents) behavior.AppEvents = [];
+  if (!behavior.AppProcesses) behavior.AppProcesses = [];
+  (behavior.AppBots as Array<Record<string, unknown>>).push(newBot);
+  (behavior.AppEvents as Array<Record<string, unknown>>).push(newEvent);
+  (behavior.AppProcesses as Array<Record<string, unknown>>).push(newProcess);
+
+  const warning =
+    "Process State Table が AppSheet 側で自動生成されない場合は手動でテーブル作成が必要かも。saveapp 後に必ず Manage→Monitor で動作確認すること。";
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      botName: args.botName,
+      eventName,
+      processName,
+      warning,
+      message: `dry-run。Bot '${args.botName}' + Event '${eventName}' + Process '${processName}' を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedBots = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppBots as Array<Record<string, unknown>> | undefined;
+  const created = refreshedBots?.find((b) => b.Name === args.botName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    botName: args.botName,
+    eventName,
+    processName,
+    componentIds: { bot: botComponentId, event: eventComponentId, process: processComponentId },
+    warning,
+    message: created
+      ? `✅ Bot '${args.botName}' 作成完了（4 配列リンク済み・Tasks は別途追加可能）`
+      : `⚠️ saveapp Success だが事後検証で Bot 不在。4 配列のいずれかが拒否された可能性。`,
+  };
+}
+
 export async function addOpenUrlAction(args: {
   appId?: string;
   appName?: string;

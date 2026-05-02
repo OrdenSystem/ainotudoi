@@ -57,6 +57,7 @@ import {
   setSecurityFilter,
   promoteToRef,
   addOpenUrlAction,
+  createBot,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -620,6 +621,36 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_create_bot",
+    description:
+      "Bot を新規作成する（AppBots / AppEvents / AppProcesses の 3 配列を同時追加・名前リンク自動）。Data Change Event でトリガーし、既存 Action を 1 つ実行する最小構成。Email Task 等は別途 Tasks 配列に追加可能。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        botName: { type: "string", description: "Bot 名（アプリ内一意）" },
+        tableName: { type: "string", description: "監視対象テーブル名" },
+        actionName: {
+          type: "string",
+          description: "Bot が実行する既存 Action の名前。Action は tableName と一致するテーブル所属である必要あり",
+        },
+        eventType: {
+          type: "string",
+          enum: ["ADDS_ONLY", "UPDATES_ONLY", "DELETES_ONLY", "ADDS_AND_UPDATES", "ADDS_UPDATES_DELETES"],
+          description: "発火する変更種別。デフォルト ADDS_AND_UPDATES",
+        },
+        filterCondition: {
+          type: "string",
+          description: "イベントフィルタ条件式。デフォルト TRUE（全変更）。例: '[ステータス] = \"承認済み\"'",
+        },
+        disabled: { type: "boolean", description: "Bot 無効状態で作成。デフォルト false" },
+        apply: { type: "boolean" },
+      },
+      required: ["botName", "tableName", "actionName"],
+    },
+  },
+  {
     name: "appsheet_add_openurl_action",
     description:
       "OpenUrl (NAVIGATE_URL) 系 Action を新規追加する。外部 WebApp や HTTPS URL に遷移するボタン用。URL 式は CONCATENATE で動的組立可能。HTTP は警告。デフォルト dry-run。",
@@ -790,6 +821,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return promoteToRef(args as Parameters<typeof promoteToRef>[0]);
     case "appsheet_add_openurl_action":
       return addOpenUrlAction(args as Parameters<typeof addOpenUrlAction>[0]);
+    case "appsheet_create_bot":
+      return createBot(args as Parameters<typeof createBot>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }
