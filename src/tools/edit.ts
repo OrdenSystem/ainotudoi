@@ -1538,6 +1538,157 @@ export async function setColumnDescription(args: {
   };
 }
 
+export async function addSlice(args: {
+  appId?: string;
+  appName?: string;
+  sliceName: string;
+  sourceTable: string;
+  filterCondition?: string;
+  columns?: string[];
+  actions?: string[];
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  sliceName: string;
+  sourceTable: string;
+  componentId?: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  if (!appData) throw new Error("AppData が見つかりません");
+
+  // ソーステーブルの存在確認
+  const dataSets = (appData.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.sourceTable)) {
+    const known = dataSets.map((d) => d.Name as string).join(", ");
+    throw new Error(`ソーステーブル '${args.sourceTable}' が見つかりません。既知: ${known}`);
+  }
+
+  const slices = (appData.TableSlices as Array<Record<string, unknown>> | undefined) ?? [];
+  if (slices.find((s) => s.Name === args.sliceName)) {
+    throw new Error(`Slice '${args.sliceName}' は既に存在します`);
+  }
+
+  // columns 省略時はソーステーブルの全列を自動取得
+  let columns = args.columns;
+  if (!columns) {
+    const schemas = app.AppData?.DataSchemas ?? [];
+    const sourceSchema =
+      schemas.find((s) => s.AutoSchemaFrom === args.sourceTable) ??
+      schemas.find((s) => s.Name === `${args.sourceTable}_Schema`);
+    if (sourceSchema?.Attributes) {
+      columns = sourceSchema.Attributes.map((a) => a.Name as string).filter((n) => !!n);
+    } else {
+      columns = [];
+    }
+  }
+
+  const actions = args.actions ?? ["**auto**"];
+  const filterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : null;
+
+  const newSlice: Record<string, unknown> = {
+    ExprLookup: {},
+    Name: args.sliceName,
+    SourceTable: args.sourceTable,
+    SourceColumn: null,
+    RowFilterCondition: null,
+    RowFilterParameter: null,
+    Columns: columns,
+    Actions: actions,
+    FilterExpression: { Description: { Content: "" } },
+    FilterCondition: filterCondition,
+    FilterEvaluatable: null,
+    AllowedUpdates: 0,
+    UpdateMode: 7,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: generateComponentId(),
+    _isNew: true,
+    _version: 6,
+    _index: slices.length,
+    _path: `AppData.TableSlices[${slices.length}]`,
+  };
+
+  if (!appData.TableSlices) appData.TableSlices = [];
+  (appData.TableSlices as Array<Record<string, unknown>>).push(newSlice);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      sliceName: args.sliceName,
+      sourceTable: args.sourceTable,
+      message: `dry-run。Slice '${args.sliceName}' (source: '${args.sourceTable}', columns: ${columns.length} 件) を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedSlices = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.TableSlices as Array<Record<string, unknown>> | undefined;
+  const created = refreshedSlices?.find((s) => s.Name === args.sliceName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !!created,
+    sliceName: args.sliceName,
+    sourceTable: args.sourceTable,
+    componentId: created?.ComponentId as string | undefined,
+    message: created
+      ? `✅ Slice '${args.sliceName}' 作成完了`
+      : `⚠️ saveapp Success だが事後検証で Slice 不在`,
+  };
+}
+
+export async function removeSlice(args: {
+  appId?: string;
+  appName?: string;
+  sliceName: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  sliceName: string;
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  const slices = (appData?.TableSlices as Array<Record<string, unknown>> | undefined) ?? [];
+  const idx = slices.findIndex((s) => s.Name === args.sliceName);
+  if (idx === -1) {
+    throw new Error(`Slice '${args.sliceName}' が見つかりません`);
+  }
+
+  slices.splice(idx, 1);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, sliceName: args.sliceName, message: "dry-run。apply: true で送信。" };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedSlices = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.TableSlices as Array<Record<string, unknown>> | undefined;
+  const stillThere = refreshedSlices?.find((s) => s.Name === args.sliceName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false,
+    applied: !stillThere,
+    sliceName: args.sliceName,
+    message: stillThere ? `⚠️ saveapp Success だが Slice '${args.sliceName}' がまだ残っている` : `✅ Slice '${args.sliceName}' 削除完了`,
+  };
+}
+
 export async function createBot(args: {
   appId?: string;
   appName?: string;

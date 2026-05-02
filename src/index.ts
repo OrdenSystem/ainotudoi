@@ -58,6 +58,8 @@ import {
   promoteToRef,
   addOpenUrlAction,
   createBot,
+  addSlice,
+  removeSlice,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -621,6 +623,50 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_slice",
+    description:
+      "Slice (TableSlice) を新規追加する。クライアント側でフィルタ評価・列順カスタムができる。データ秘匿には使えない（→ Security Filter）。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        sliceName: { type: "string", description: "Slice 名（アプリ内一意）" },
+        sourceTable: { type: "string", description: "ソーステーブル名" },
+        filterCondition: {
+          type: "string",
+          description: 'フィルタ条件式。例: \'[ステータス] = "レビュー待ち"\'。省略時は全行',
+        },
+        columns: {
+          type: "array",
+          items: { type: "string" },
+          description: "公開する列名の配列（順序付き）。省略時はソーステーブルの全列を自動取得",
+        },
+        actions: {
+          type: "array",
+          items: { type: "string" },
+          description: '使える Action 名の配列。省略時は ["**auto**"]（全 Action 継承）',
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["sliceName", "sourceTable"],
+    },
+  },
+  {
+    name: "appsheet_remove_slice",
+    description: "Slice を削除する。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        sliceName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["sliceName"],
+    },
+  },
+  {
     name: "appsheet_create_bot",
     description:
       "Bot を新規作成する（AppBots / AppEvents / AppProcesses の 3 配列を同時追加・名前リンク自動）。Data Change Event でトリガーし、既存 Action を 1 つ実行する最小構成。Email Task 等は別途 Tasks 配列に追加可能。デフォルト dry-run。",
@@ -823,6 +869,10 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addOpenUrlAction(args as Parameters<typeof addOpenUrlAction>[0]);
     case "appsheet_create_bot":
       return createBot(args as Parameters<typeof createBot>[0]);
+    case "appsheet_add_slice":
+      return addSlice(args as Parameters<typeof addSlice>[0]);
+    case "appsheet_remove_slice":
+      return removeSlice(args as Parameters<typeof removeSlice>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }
