@@ -648,7 +648,7 @@ AppEventDefinition: {
 | `TableOrFolderName` | 対象テーブル / Slice |
 | `Action` | **View タイプ**（`"table"` / `"card"` / `"detail"` 等の小文字文字列） |
 | `ActionType` | 通常 `null`（Action 系のフィールド名と紛らわしいが、View では未使用） |
-| `Position` | 表示位置（`first` / `next` / `middle` / `later` / `last` / `menu` / `ref` / `none`）。詳細 §6.5 |
+| `Position` | 表示位置（**`left` / `center` / `right`** / `menu` / `ref` / `none`）。詳細 §6.5 |
 | `ShowIf` | 表示条件式（USEREMAIL() で出し分け等） |
 | `Settings` | View タイプ固有設定の **JSON 文字列**（`$type` 含む） |
 | `ViewDefinition` | Settings と同じ内容を**オブジェクトで保持**（送信時は両方更新） |
@@ -716,19 +716,32 @@ AppEventDefinition: {
 
 ### 6.5 Position 値と View Editor のグルーピング
 
-実 loadApp の観察で判明した重要事項（**Issue #3 由来**）：
+実 loadApp の **再観察**で判明した重要事項（**Issue #3 再調査由来**・2026-05-03）：
 
-| Position 値 | Editor 表示グループ |
-|------------|-------------------|
-| `first` / `next` / `middle` / `later` / `last` | **PRIMARY NAVIGATION**（画面下タブ・左から順） |
+| Position 値（実物） | Editor 表示グループ |
+|-------------------|-------------------|
+| `left` / `center` / `right` | **PRIMARY NAVIGATION**（画面下タブ・3 段階） |
 | `menu` | **MENU NAVIGATION**（左メニュー・ドロワー） |
 | `ref` | **REFERENCE VIEWS**（参照のみ・ナビ非表示） |
 | `none` | 隠し View |
-| ⚠ `primary` | **SYSTEM GENERATED 扱い**（新 Editor）。`first` を使うこと |
+| ⚠ `primary` / `first` / `next` / `middle` / `later` / `last` | **SYSTEM GENERATED 扱い**になる UI ラベル系（実物 saveapp では使われない値） |
 
-**ハマり所**:
+**ハマり所（重要）**:
 
-`Position: "primary"` は古い AppSheet のドキュメントに登場するが、新 Editor では **SYSTEM GENERATED に分類**されてしまう。`appsheet_create_view` ツールでは `primary` を受け取った場合、内部で自動的に `first` に変換する（後方互換）。
+- AppSheet Editor の View 編集 UI には「first / next / middle / later / last」のラベルが表示されるが、**saveapp 時に内部的に `left / center / right` の 3 値にマップ**されている
+- 旧ドキュメントや古い AppSheet バージョンに登場する `Position: "primary"` も新 Editor では **SYSTEM GENERATED に分類**されてしまう
+- `appsheet_create_view` ツールでは UI ラベル系を受け取った場合、内部で `left / center / right` に変換する（後方互換）:
+  - `primary` / `first` / `next` → `left`
+  - `middle` → `center`
+  - `later` / `last` → `right`
+
+**実物観察データ**（WP 投稿 app で正常表示されている User Views）:
+```
+記事管理   / Position: "center"  / CreatedBy: "App owner"
+ログ       / Position: "left"    / CreatedBy: "App owner"
+設定       / Position: "right"   / CreatedBy: "App owner"
+ログテーブル / Position: "menu"  / CreatedBy: "App owner"
+```
 
 ### 6.6 ComponentId のフォーマット
 

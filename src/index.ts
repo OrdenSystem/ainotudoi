@@ -659,14 +659,17 @@ const tools: Tool[] = [
         },
         position: {
           type: "string",
-          enum: ["first", "next", "middle", "later", "last", "menu", "ref", "none", "primary"],
+          enum: ["left", "center", "right", "menu", "ref", "none", "first", "next", "middle", "later", "last", "primary"],
           description:
-            "表示位置（実 Editor UI 値）:\n" +
-            "・first/next/middle/later/last → PRIMARY NAVIGATION (画面下タブ・左から順)\n" +
+            "表示位置（実物 loadApp 観察値・Issue #3 再調査結果）:\n" +
+            "・left / center / right → PRIMARY NAVIGATION (画面下タブ・3 段階)\n" +
             "・menu → MENU NAVIGATION (左メニュー)\n" +
-            "・ref → REFERENCE VIEWS\n" +
+            "・ref → REFERENCE VIEWS (参照のみ・ナビ非表示)\n" +
             "・none → 隠し View\n" +
-            "・primary は first に内部マップ（後方互換・新 Editor で primary は SYSTEM GENERATED 扱いされるため）",
+            "UI ラベル系の自動マップ:\n" +
+            "・primary / first / next → left\n" +
+            "・middle → center\n" +
+            "・later / last → right",
         },
         showIf: { type: "string", description: "表示条件式（任意）" },
         icon: { type: "string", description: "FontAwesome アイコン名。デフォルト fa-list-ul" },
