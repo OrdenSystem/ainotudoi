@@ -368,9 +368,12 @@ export async function setColumnType(args: {
 }
 
 function generateComponentId(): string {
-  // 26 char Crockford base32 (uppercase + 2-7), AppSheet 互換形式
+  // AppSheet の ComponentId は「K + 26 文字」= 27 文字。"K" 固定プレフィックス。
+  // Issue #3 で判明: 26 文字 + ランダム先頭で生成すると Editor が SYSTEM GENERATED に分類してしまう。
+  // 観測値: App owner 手動作成 / System 自動生成 ともに `K` 始まり 27 文字。
+  // 文字集合は Crockford base32 風（A-Z + 2-7、I/O/L/U 含む）。
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  let id = "";
+  let id = "K";
   for (let i = 0; i < 26; i++) id += chars[Math.floor(Math.random() * 32)];
   return id;
 }
@@ -1997,7 +2000,13 @@ export async function createView(args: {
   viewName: string;
   tableName: string;
   viewType: ViewType;
-  position?: "primary" | "menu" | "ref" | "none";
+  // Position 値の Editor UI マッピング:
+  //   first / next / middle / later / last  → PRIMARY NAVIGATION (画面下タブ・左から順)
+  //   menu                                  → MENU NAVIGATION (左メニュー)
+  //   ref                                   → REFERENCE VIEWS (参照のみ・ナビ非表示)
+  //   none                                  → 隠し View
+  // 後方互換: primary は first にマップ（loadApp 観察では Editor が primary を SYSTEM GENERATED 扱いするため）
+  position?: "first" | "next" | "middle" | "later" | "last" | "menu" | "ref" | "none" | "primary";
   showIf?: string;
   icon?: string;
   menuOrder?: number;
@@ -2032,7 +2041,9 @@ export async function createView(args: {
     throw new Error(`テーブル/Slice '${args.tableName}' が見つかりません`);
   }
 
-  const position = args.position ?? "menu";
+  // primary は新 Editor UI で SYSTEM GENERATED 扱いされるため first にマップ
+  const positionRaw = args.position ?? "menu";
+  const position = positionRaw === "primary" ? "first" : positionRaw;
   const icon = args.icon ?? "fa-list-ul";
   const menuOrder = args.menuOrder ?? 1;
   const showIf = args.showIf ? normalizeFormula(args.showIf) : null;

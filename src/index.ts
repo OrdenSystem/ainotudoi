@@ -659,8 +659,14 @@ const tools: Tool[] = [
         },
         position: {
           type: "string",
-          enum: ["primary", "menu", "ref", "none"],
-          description: "表示位置。デフォルト menu",
+          enum: ["first", "next", "middle", "later", "last", "menu", "ref", "none", "primary"],
+          description:
+            "表示位置（実 Editor UI 値）:\n" +
+            "・first/next/middle/later/last → PRIMARY NAVIGATION (画面下タブ・左から順)\n" +
+            "・menu → MENU NAVIGATION (左メニュー)\n" +
+            "・ref → REFERENCE VIEWS\n" +
+            "・none → 隠し View\n" +
+            "・primary は first に内部マップ（後方互換・新 Editor で primary は SYSTEM GENERATED 扱いされるため）",
         },
         showIf: { type: "string", description: "表示条件式（任意）" },
         icon: { type: "string", description: "FontAwesome アイコン名。デフォルト fa-list-ul" },

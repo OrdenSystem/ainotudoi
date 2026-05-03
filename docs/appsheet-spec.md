@@ -616,7 +616,7 @@ AppBots[]       Bot 本体（名前・有効/無効・EventName・ProcessName）
 | `TableOrFolderName` | 対象テーブル / Slice |
 | `Action` | **View タイプ**（`"table"` / `"card"` / `"detail"` 等の小文字文字列） |
 | `ActionType` | 通常 `null`（Action 系のフィールド名と紛らわしいが、View では未使用） |
-| `Position` | 表示位置（`primary` / `menu` / `ref` / `none`） |
+| `Position` | 表示位置（`first` / `next` / `middle` / `later` / `last` / `menu` / `ref` / `none`）。詳細 §6.5 |
 | `ShowIf` | 表示条件式（USEREMAIL() で出し分け等） |
 | `Settings` | View タイプ固有設定の **JSON 文字列**（`$type` 含む） |
 | `ViewDefinition` | Settings と同じ内容を**オブジェクトで保持**（送信時は両方更新） |
@@ -681,6 +681,36 @@ AppBots[]       Bot 本体（名前・有効/無効・EventName・ProcessName）
 | `Settings` | 色・アイコン・太字等の表示設定（オブジェクト） |
 | `RuleOrder` | 評価順序（数値） |
 | `Disabled` | 無効化フラグ |
+
+### 6.5 Position 値と View Editor のグルーピング
+
+実 loadApp の観察で判明した重要事項（**Issue #3 由来**）：
+
+| Position 値 | Editor 表示グループ |
+|------------|-------------------|
+| `first` / `next` / `middle` / `later` / `last` | **PRIMARY NAVIGATION**（画面下タブ・左から順） |
+| `menu` | **MENU NAVIGATION**（左メニュー・ドロワー） |
+| `ref` | **REFERENCE VIEWS**（参照のみ・ナビ非表示） |
+| `none` | 隠し View |
+| ⚠ `primary` | **SYSTEM GENERATED 扱い**（新 Editor）。`first` を使うこと |
+
+**ハマり所**:
+
+`Position: "primary"` は古い AppSheet のドキュメントに登場するが、新 Editor では **SYSTEM GENERATED に分類**されてしまう。`appsheet_create_view` ツールでは `primary` を受け取った場合、内部で自動的に `first` に変換する（後方互換）。
+
+### 6.6 ComponentId のフォーマット
+
+すべてのエンティティ（View / Action / Bot / Slice / Schema 列等）の `ComponentId` は以下の固定フォーマット（**Issue #3 由来**）：
+
+```
+K + 26 文字（A-Z + 2-7 の Crockford base32 風文字集合）= 27 文字
+```
+
+**観測**:
+- `App owner` 手動作成・`System` 自動生成 ともに **`K` 始まり 27 文字**
+- ランダム先頭 / 26 文字長で生成すると Editor が SYSTEM GENERATED に分類してしまうため、**`K` プレフィックス必須**
+
+MCP の `generateComponentId()` ヘルパは Phase 6 から `K` + 26 文字 = 27 文字を生成する。
 
 ---
 
