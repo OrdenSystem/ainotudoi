@@ -557,14 +557,46 @@ AppBots[]       Bot 本体（名前・有効/無効・EventName・ProcessName）
 
 実装メモ: [src/tools/edit.ts](../src/tools/edit.ts) の `appsheet_clone_bot`, `appsheet_remove_bot` がこの 4 配列同時操作を行う。
 
-**Bot Event の種別**：
+**Bot Event の種別**（`Event.EventType` の値）：
 
-| 種別 | トリガー |
-|------|----------|
-| `DataChange` (`Adds`, `Updates`, `Deletes`) | テーブルの行変更 |
-| `Schedule` | 時刻スケジュール（毎日・毎週・cron 風） |
-| `Webhook` | 外部からの POST 受信 |
-| `ScheduledReport` | 定期レポート送信 |
+| 種別 | $type | トリガー |
+|------|-------|----------|
+| `Change` | `AppChangeEventDefinition` | テーブルの行変更（ADDS_ONLY / UPDATES_ONLY / DELETES_ONLY / ADDS_AND_UPDATES / ADDS_UPDATES_DELETES） |
+| `Scheduled` | `AppScheduledEventDefinition` | 時刻スケジュール（5 フィールド cron） |
+| `Webhook` | `AppWebhookEventDefinition` | 外部からの POST 受信 |
+| `ScheduledReport` | `AppScheduledReportEventDefinition` | 定期レポート送信 |
+
+**`Scheduled` Event の必須フィールド**（loadApp HAR 由来・Issue #6）:
+
+```
+EventType: "Scheduled"
+AppEventDefinition: {
+  $type: "Jeenee.DataTypes.AppScheduledEventDefinition, Jeenee.DataTypes",
+  Schedule: "0 12 1 * *",      // 5 フィールド cron。"分 時 日 月 曜日"
+  TimeZone: "Tokyo Standard Time",  // ★ Windows 形式（IANA 形式 Asia/Tokyo ではない）
+  Table: "<対象テーブル名>",
+  FilterCondition: "true",       // 小文字 true がデフォルト
+  ForEachRowInTable: true,       // 各行に対して実行するか
+  Region: "",
+}
+```
+
+**主な Windows TimeZone 値**:
+
+- `"Tokyo Standard Time"` — JST (UTC+9)
+- `"Pacific Standard Time"` — PST (UTC-8)
+- `"Eastern Standard Time"` — EST (UTC-5)
+- `"UTC"` — 協定世界時
+
+**cron 例**:
+
+| パターン | cron | 用途 |
+|---------|------|------|
+| 毎日 12:00 | `0 12 * * *` | 日次レポート |
+| 毎週月曜 9:00 | `0 9 * * 1` | 週次集計 |
+| 毎月 1 日 12:00 | `0 12 1 * *` | 月次バッチ |
+| 平日 18:00 | `0 18 * * 1-5` | 業務日終了通知 |
+| 毎時 0 分 | `0 * * * *` | 毎時集計 |
 
 **Task の種別** (`Task.TaskType` で識別)：
 

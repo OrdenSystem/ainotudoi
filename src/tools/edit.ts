@@ -2483,8 +2483,16 @@ export async function createBot(args: {
   botName: string;
   tableName: string;
   actionName: string;
-  eventType?: "ADDS_ONLY" | "UPDATES_ONLY" | "DELETES_ONLY" | "ADDS_AND_UPDATES" | "ADDS_UPDATES_DELETES";
+  // Data Change 系 (デフォルト) または "Scheduled" を指定可能
+  eventType?: "ADDS_ONLY" | "UPDATES_ONLY" | "DELETES_ONLY" | "ADDS_AND_UPDATES" | "ADDS_UPDATES_DELETES" | "Scheduled";
   filterCondition?: string;
+  // Schedule トリガーの場合のみ指定（eventType: "Scheduled"）
+  scheduleConfig?: {
+    cron: string;             // 5 フィールド cron 形式。例: "0 12 1 * *" (月初 12:00)
+    timeZone?: string;        // Windows タイムゾーン形式。例: "Tokyo Standard Time" / "Pacific Standard Time" / "UTC"
+    forEachRowInTable?: boolean; // 各行に対して実行するか。デフォルト true
+    region?: string;          // 通常 "" のまま
+  };
   disabled?: boolean;
   apply?: boolean;
 }): Promise<{
@@ -2541,7 +2549,14 @@ export async function createBot(args: {
   }
 
   const eventType = args.eventType ?? "ADDS_AND_UPDATES";
-  const filterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : "=TRUE";
+  const isSchedule = eventType === "Scheduled";
+
+  if (isSchedule && !args.scheduleConfig) {
+    throw new Error("eventType: 'Scheduled' の場合は scheduleConfig.cron が必須");
+  }
+  if (isSchedule && !args.scheduleConfig?.cron) {
+    throw new Error("scheduleConfig.cron が必須。例: '0 12 1 * *' (月初 12:00)");
+  }
 
   // Step Action ノードの ComponentId
   const stepNodeComponentId = generateComponentId();
@@ -2550,11 +2565,31 @@ export async function createBot(args: {
   const processComponentId = generateComponentId();
   const botComponentId = generateComponentId();
 
-  const newEvent = {
-    ExprLookup: {},
-    Name: eventName,
-    EventType: "Change",
-    AppEventDefinition: {
+  // Event 構造を eventType によって切替
+  let appEventDefinition: Record<string, unknown>;
+  let outerEventType: string;
+  let outerFilterCondition: string | null;
+  if (isSchedule) {
+    const cfg = args.scheduleConfig!;
+    appEventDefinition = {
+      $type: "Jeenee.DataTypes.AppScheduledEventDefinition, Jeenee.DataTypes",
+      ExprLookup: {},
+      RecurrentRuleName: null,
+      Schedule: cfg.cron,
+      TimeZone: cfg.timeZone ?? "Tokyo Standard Time",
+      Table: args.tableName,
+      FilterCondition: args.filterCondition ?? "true",
+      ForEachRowInTable: cfg.forEachRowInTable ?? true,
+      Region: cfg.region ?? "",
+      IsValid: true,
+      Visibility: "ALWAYS",
+      DisableAutoUpdate: false,
+      ComponentId: eventDefComponentId,
+    };
+    outerEventType = "Scheduled";
+    outerFilterCondition = null; // Scheduled の場合 outer FilterCondition は null（AppEventDefinition.FilterCondition 側で持つ）
+  } else {
+    appEventDefinition = {
       $type: "Jeenee.DataTypes.AppChangeEventDefinition, Jeenee.DataTypes",
       ExprLookup: {},
       ChangeEvent: eventType,
@@ -2563,8 +2598,17 @@ export async function createBot(args: {
       Visibility: "ALWAYS",
       DisableAutoUpdate: false,
       ComponentId: eventDefComponentId,
-    },
-    FilterCondition: filterCondition,
+    };
+    outerEventType = "Change";
+    outerFilterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : "=TRUE";
+  }
+
+  const newEvent = {
+    ExprLookup: {},
+    Name: eventName,
+    EventType: outerEventType,
+    AppEventDefinition: appEventDefinition,
+    FilterCondition: outerFilterCondition,
     Disabled: false,
     CreatedBy: null,
     AutomationPurpose: 0,
@@ -2581,7 +2625,7 @@ export async function createBot(args: {
     DisableAutoUpdate: false,
     ComponentId: eventComponentId,
     _isNew: true,
-    _version: 6,
+    _version: isSchedule ? 7 : 6,
     _index: events.length,
     _path: `Behavior.AppEvents[${events.length}]`,
   };

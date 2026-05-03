@@ -802,26 +802,50 @@ const tools: Tool[] = [
   {
     name: "appsheet_create_bot",
     description:
-      "Bot を新規作成する（AppBots / AppEvents / AppProcesses の 3 配列を同時追加・名前リンク自動）。Data Change Event でトリガーし、既存 Action を 1 つ実行する最小構成。Email Task 等は別途 Tasks 配列に追加可能。デフォルト dry-run。",
+      "Bot を新規作成する（AppBots / AppEvents / AppProcesses の 3 配列を同時追加・名前リンク自動）。\n" +
+      "Data Change Event または Scheduled Event でトリガー可能:\n" +
+      "・eventType: ADDS_ONLY/UPDATES_ONLY/DELETES_ONLY/ADDS_AND_UPDATES/ADDS_UPDATES_DELETES → Data Change Bot\n" +
+      "・eventType: Scheduled → 時刻トリガー Bot (scheduleConfig.cron 必須)\n" +
+      "Email Task / AppsScript Task 等は別途 Tasks 配列に追加可能。デフォルト dry-run。",
     inputSchema: {
       type: "object",
       properties: {
         appId: { type: "string" },
         appName: { type: "string" },
         botName: { type: "string", description: "Bot 名（アプリ内一意）" },
-        tableName: { type: "string", description: "監視対象テーブル名" },
+        tableName: { type: "string", description: "監視対象テーブル名（Scheduled 時は対象テーブル）" },
         actionName: {
           type: "string",
           description: "Bot が実行する既存 Action の名前。Action は tableName と一致するテーブル所属である必要あり",
         },
         eventType: {
           type: "string",
-          enum: ["ADDS_ONLY", "UPDATES_ONLY", "DELETES_ONLY", "ADDS_AND_UPDATES", "ADDS_UPDATES_DELETES"],
-          description: "発火する変更種別。デフォルト ADDS_AND_UPDATES",
+          enum: ["ADDS_ONLY", "UPDATES_ONLY", "DELETES_ONLY", "ADDS_AND_UPDATES", "ADDS_UPDATES_DELETES", "Scheduled"],
+          description: "発火種別。デフォルト ADDS_AND_UPDATES。Scheduled の場合は scheduleConfig 必須",
         },
         filterCondition: {
           type: "string",
-          description: "イベントフィルタ条件式。デフォルト TRUE（全変更）。例: '[ステータス] = \"承認済み\"'",
+          description: "イベントフィルタ条件式。例: '[ステータス] = \"承認済み\"'。デフォルト Change 系は TRUE / Scheduled 系は \"true\"",
+        },
+        scheduleConfig: {
+          type: "object",
+          description: "eventType: 'Scheduled' の場合のみ必須",
+          properties: {
+            cron: {
+              type: "string",
+              description: "5 フィールド cron 形式。例: '0 12 * * *' (毎日 12:00) / '0 9 * * 1' (毎週月曜 9:00) / '0 12 1 * *' (毎月 1 日 12:00)",
+            },
+            timeZone: {
+              type: "string",
+              description: "Windows タイムゾーン形式。例: 'Tokyo Standard Time' (デフォルト) / 'Pacific Standard Time' / 'UTC'。IANA 形式 (Asia/Tokyo) ではない",
+            },
+            forEachRowInTable: {
+              type: "boolean",
+              description: "true でテーブルの各行に対して実行、false でテーブル単位で 1 回実行。デフォルト true",
+            },
+            region: { type: "string", description: "通常 \"\" のまま。リージョン指定が必要な場合のみ" },
+          },
+          required: ["cron"],
         },
         disabled: { type: "boolean", description: "Bot 無効状態で作成。デフォルト false" },
         apply: { type: "boolean" },
