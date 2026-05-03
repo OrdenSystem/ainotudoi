@@ -1803,6 +1803,7 @@ function buildViewDefinition(
   const common = { Icon: icon, IconRunnerUps: null, MenuOrder: menuOrder };
   switch (viewType) {
     case "table":
+      // Issue #3 真因: "**auto**" を残すと SYSTEM GENERATED 化する。
       return {
         $type: "Jeenee.DataTypes.TableViewSettings, Jeenee.DataTypes",
         ColumnWidth: options.columnWidth ?? "Default",
@@ -1813,22 +1814,24 @@ function buildViewDefinition(
         SortBy: [],
         PrimarySortColumn: null,
         IsPrimarySortDescending: false,
-        Events: [{ EventType: "Row Selected", EventAction: "**auto**" }],
+        Events: [],
         ...common,
       };
     case "card":
+      // Issue #3 真因: DeckHeader 系を "**auto**" のまま送ると Editor が
+      // 「未完成」と判定して SYSTEM GENERATED 化する。null デフォルトにする。
       return {
         $type: "Jeenee.DataTypes.CardViewSettings, Jeenee.DataTypes",
         Layout: options.layout ?? null,
-        MainDeckImageColumn: options.mainDeckImageColumn ?? "**auto**",
+        MainDeckImageColumn: options.mainDeckImageColumn ?? null,
         ImageShape: options.imageShape ?? "Square Image",
-        PrimaryDeckHeaderColumn: options.primaryDeckHeaderColumn ?? "**auto**",
-        SecondaryDeckHeaderColumn: options.secondaryDeckHeaderColumn ?? "**auto**",
-        DeckSummaryColumn: options.deckSummaryColumn ?? "**auto**",
+        PrimaryDeckHeaderColumn: options.primaryDeckHeaderColumn ?? null,
+        SecondaryDeckHeaderColumn: options.secondaryDeckHeaderColumn ?? null,
+        DeckSummaryColumn: options.deckSummaryColumn ?? null,
         DeckNestedTableColumn: options.deckNestedTableColumn ?? null,
         ShowActionBar: options.showActionBar ?? true,
-        ActionColumns: [],
-        ActionBarEntries: null,
+        ActionColumns: null,
+        ActionBarEntries: [],
         GroupBy: [],
         GroupAggregate: "NONE",
         SortBy: [],
@@ -1840,8 +1843,8 @@ function buildViewDefinition(
     case "detail":
       return {
         $type: "Jeenee.DataTypes.SlideshowViewSettings, Jeenee.DataTypes",
-        MainSlideshowImageColumn: options.mainSlideshowImageColumn ?? "**auto**",
-        DetailContentColumn: options.detailContentColumn ?? "**none**",
+        MainSlideshowImageColumn: options.mainSlideshowImageColumn ?? null,
+        DetailContentColumn: options.detailContentColumn ?? null,
         HeaderColumns: options.headerColumns ?? [],
         QuickEditColumns: options.quickEditColumns ?? [],
         ColumnOrder: options.columnOrder ?? [],
@@ -1872,31 +1875,29 @@ function buildViewDefinition(
         FormFooterStyle: options.formFooterStyle ?? "Bottom",
         MaxNestedRows: options.maxNestedRows ?? 5,
         AudioInput: options.audioInput ?? false,
-        Events: [{ EventType: "Form Saved", EventAction: "**auto**" }],
+        Events: [],
         ...common,
       };
     case "deck":
+      // Issue #3 真因: DeckHeader 系・Events の "**auto**" を残すと
+      // SYSTEM GENERATED 化する。null デフォルト + Events 空配列にする。
       return {
         $type: "Jeenee.DataTypes.DeckViewSettings, Jeenee.DataTypes",
-        MainDeckImageColumn: options.mainDeckImageColumn ?? "**auto**",
+        MainDeckImageColumn: options.mainDeckImageColumn ?? null,
         ImageShape: options.imageShape ?? "Square Image",
-        PrimaryDeckHeaderColumn: options.primaryDeckHeaderColumn ?? "**auto**",
-        SecondaryDeckHeaderColumn: options.secondaryDeckHeaderColumn ?? "**auto**",
-        DeckSummaryColumn: options.deckSummaryColumn ?? "**auto**",
+        PrimaryDeckHeaderColumn: options.primaryDeckHeaderColumn ?? null,
+        SecondaryDeckHeaderColumn: options.secondaryDeckHeaderColumn ?? null,
+        DeckSummaryColumn: options.deckSummaryColumn ?? null,
         DeckNestedTableColumn: options.deckNestedTableColumn ?? null,
         ShowActionBar: options.showActionBar ?? true,
-        ActionColumns: [],
+        ActionColumns: null,
         ActionBarEntries: [],
         GroupBy: [],
         GroupAggregate: "NONE",
         SortBy: [],
         PrimarySortColumn: null,
         IsPrimarySortDescending: false,
-        Events: [
-          { EventType: "Row Selected", EventAction: "**auto**" },
-          { EventType: "Row Swiped Left", EventAction: "**auto**" },
-          { EventType: "Row Swiped Right", EventAction: "**auto**" },
-        ],
+        Events: [],
         ...common,
       };
     case "dashboard": {
@@ -1926,7 +1927,7 @@ function buildViewDefinition(
         EndDateColumn: options.endDateColumn ?? options.startDateColumn,
         EndTimeColumn: options.endTimeColumn ?? options.startDateColumn,
         LabelColumn: options.labelColumn ?? null,
-        CategoryColumn: options.categoryColumn ?? "**auto**",
+        CategoryColumn: options.categoryColumn ?? null,
         DefaultCalendarView: options.defaultCalendarView ?? "Month",
         ColumnOrder: options.columnOrder ?? [],
         GroupBy: [],
@@ -1941,10 +1942,10 @@ function buildViewDefinition(
       return {
         $type: "Jeenee.DataTypes.MapViewSettings, Jeenee.DataTypes",
         MapType: options.mapType ?? "Automatic",
-        MapColumn: options.mapColumn ?? "**none**",
+        MapColumn: options.mapColumn ?? null,
         LocationMode: options.locationMode ?? "Normal",
         SecondaryTable: options.secondaryTable ?? null,
-        SecondaryColumn: options.secondaryColumn ?? "**none**",
+        SecondaryColumn: options.secondaryColumn ?? null,
         MinimumClusterSize: options.minimumClusterSize ?? 0,
         Events: [],
         ...common,
@@ -1966,6 +1967,7 @@ function buildViewDefinition(
         ...common,
       };
     case "gallery":
+      // Issue #3 真因: "**auto**" を残すと SYSTEM GENERATED 化する。
       return {
         $type: "Jeenee.DataTypes.GalleryViewSettings, Jeenee.DataTypes",
         ImageSize: options.imageSize ?? "Medium",
@@ -1973,7 +1975,7 @@ function buildViewDefinition(
         SortBy: [],
         PrimarySortColumn: null,
         IsPrimarySortDescending: false,
-        Events: [{ EventType: "Row Selected", EventAction: "**auto**" }],
+        Events: [],
         ...common,
       };
     case "onboarding":
