@@ -883,10 +883,31 @@ DataSet.DataFilter = "[担当者メール] = USEREMAIL()"
 
 `appsheet_find_records` (公式 API) には以下の制限：
 
-- **`Selector` パラメータが事実上必須**: 全件取得には `Filter([テーブル名], TRUE)` 等の式を渡す
+- **`Selector` は `Filter("table", expr)` 形式が必須**（boolean 式単体は受け付けない）。詳細は次の §9.5.1
 - **戻り値件数の上限**（テーブルあたり数千行が目安）
 - **スプシソースでは反映が遅い**（数秒〜数十秒）
 - **Image/File 列は URL のみ返却**（バイナリは別 API）
+
+#### 9.5.1 Selector の書式（重要・ハマり所）
+
+AppSheet API v2 の Selector は **boolean 式単体だとエラーが出ず 0 件返却**（デバッグ困難）。`Filter("table", expr)` または `Select(table[col], cond)` でラップする必要がある：
+
+```
+❌ NG（0 件返却・エラーなし）
+selector: 'TRUE'
+selector: '[ステータス] = "未処理"'
+selector: 'AND([記録日時] >= TODAY(), [記録日時] < TODAY()+1)'
+
+✅ OK
+selector: 'Filter("記事管理", TRUE)'                          // 全件
+selector: 'Filter("記事管理", [ステータス] = "未処理")'        // 条件付き
+selector: 'Select(記事管理[ID], [ステータス] = "公開済み")'    // 列のみ抽出
+selector: ''                                                  // 空文字も全件
+```
+
+許容されるリスト関数: `Filter` / `Select` / `TopN` / `OrderBy` / `Sort` / `REF_ROWS` / `List` 等。
+
+**MCP の自動ラップ** (Phase 6 から): `appsheet_find_records` は `selector` が boolean 式単体の場合、**自動的に `Filter("table", ...)` でラップ**する。後方互換のため、既に `Filter(...)` 等のリスト関数で始まる selector は素通しする。これで boolean 式直書きでも動作する。
 
 ### 9.6 saveapp の同時編集競合
 

@@ -78,14 +78,21 @@ const tools: Tool[] = [
   {
     name: "appsheet_find_records",
     description:
-      "AppSheet API v2 の Find アクションでテーブルからレコードを取得する。selector に AppSheet 式（FILTER/SELECT 等）を渡せる。",
+      "AppSheet API v2 の Find アクションでテーブルからレコードを取得する。\n" +
+      "selector の書式: \n" +
+      '・推奨: \'Filter("テーブル名", boolean式)\' / \'Select(テーブル[列], cond)\'\n' +
+      "・boolean 式単体（例: '[ステータス] = \"未処理\"'）を渡すと**自動的に Filter() でラップ**される（DX 改善）\n" +
+      "・空文字 / 省略時は全件取得（ただし AppSheet 側の上限あり）\n" +
+      "AppSheet API は selector 不一致だとエラーでなく **0 件返却**するので注意。",
     inputSchema: {
       type: "object",
       properties: {
         tableName: { type: "string", description: "AppSheet 上のテーブル名（日本語可）" },
         selector: {
           type: "string",
-          description: 'AppSheet 式。例: \'Filter("記事管理", [ステータス] = "未処理")\'',
+          description:
+            'AppSheet 式。Filter("table", expr) ラッパー必須（boolean 単体は自動ラップ）。' +
+            '例: \'Filter("記事管理", [ステータス] = "未処理")\' / \'[ステータス] = "未処理"\' (自動ラップ)',
         },
         appId: { type: "string", description: "対象 App ID（省略時は .env 既定）" },
         locale: { type: "string" },

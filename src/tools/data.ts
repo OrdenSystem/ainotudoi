@@ -69,13 +69,37 @@ export async function invoke(opts: InvokeOptions): Promise<unknown> {
   return callAppSheet(credential, opts.tableName, payload);
 }
 
+/**
+ * AppSheet API v2 の Selector は `Filter("table", boolean式)` または `Select(table[col], cond)` の
+ * 形式が必須。boolean 式単体（例: `[列] = "値"`）を渡すと API は 0 件返却して何も教えてくれず
+ * デバッグが辛いので、ここで自動ラップする。
+ *
+ * 既に Filter / Select / TopN / OrderBy などのリスト関数で始まる場合は素通し。
+ * 空文字列も素通し（全件取得）。
+ *
+ * Issue #7 対応。
+ */
+function wrapSelector(rawSelector: string | undefined, tableName: string): string | undefined {
+  if (rawSelector === undefined) return undefined;
+  const trimmed = rawSelector.trim();
+  if (trimmed === "") return rawSelector; // 空は全件
+  // 既にリスト関数で始まっている場合は素通し
+  const listFns = ["Filter(", "FILTER(", "Select(", "SELECT(", "TopN(", "TOPN(", "OrderBy(", "ORDERBY(", "Sort(", "SORT(", "REF_ROWS(", "Ref_Rows(", "RefRows(", "List(", "LIST("];
+  for (const fn of listFns) {
+    if (trimmed.startsWith(fn)) return rawSelector;
+  }
+  // それ以外（boolean 式や定数）を Filter("table", ...) でラップ
+  log.info("wrapping selector with Filter()", { tableName, original: rawSelector.slice(0, 60) });
+  return `Filter("${tableName}", ${trimmed})`;
+}
+
 export const findRecords = (args: {
   tableName: string;
   selector?: string;
   appId?: string;
   locale?: string;
   timezone?: string;
-}) => invoke({ ...args, action: "Find" });
+}) => invoke({ ...args, action: "Find", selector: wrapSelector(args.selector, args.tableName) });
 
 export const addRecords = (args: {
   tableName: string;
