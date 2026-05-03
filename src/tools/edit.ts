@@ -2090,7 +2090,7 @@ export async function createView(args: {
       Parameters: [],
       Settings: settings,
       ViewDefinition: viewDefinition,
-      CreatedBy: "User",
+      CreatedBy: "App owner",
       Comment: null,
       IsValid: true,
       Visibility: "ALWAYS",
