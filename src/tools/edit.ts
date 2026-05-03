@@ -2000,13 +2000,17 @@ export async function createView(args: {
   viewName: string;
   tableName: string;
   viewType: ViewType;
-  // Position 値の Editor UI マッピング:
-  //   first / next / middle / later / last  → PRIMARY NAVIGATION (画面下タブ・左から順)
-  //   menu                                  → MENU NAVIGATION (左メニュー)
-  //   ref                                   → REFERENCE VIEWS (参照のみ・ナビ非表示)
-  //   none                                  → 隠し View
-  // 後方互換: primary は first にマップ（loadApp 観察では Editor が primary を SYSTEM GENERATED 扱いするため）
-  position?: "first" | "next" | "middle" | "later" | "last" | "menu" | "ref" | "none" | "primary";
+  // Position 値の実物 (Issue #3 再調査結果):
+  //   left / center / right → PRIMARY NAVIGATION (画面下タブ)
+  //   menu                  → MENU NAVIGATION (左メニュー)
+  //   ref                   → REFERENCE VIEWS (参照のみ)
+  //   none                  → 隠し View
+  // UI ラベル (first/next/middle/later/last) と "primary" は内部で
+  // left/center/right にマップ:
+  //   first/next/primary → left
+  //   middle             → center
+  //   later/last         → right
+  position?: "left" | "center" | "right" | "menu" | "ref" | "none" | "first" | "next" | "middle" | "later" | "last" | "primary";
   showIf?: string;
   icon?: string;
   menuOrder?: number;
@@ -2041,9 +2045,20 @@ export async function createView(args: {
     throw new Error(`テーブル/Slice '${args.tableName}' が見つかりません`);
   }
 
-  // primary は新 Editor UI で SYSTEM GENERATED 扱いされるため first にマップ
+  // 実物 loadApp 観察 (Issue #3 再調査)で判明した PRIMARY NAVIGATION の正解値:
+  //   left / center / right （UI ラベル first/next/middle/later/last は内部でこの 3 値にマップ）
+  // first/next を渡された場合は left、middle は center、later/last は right に変換。
+  // primary もここで left にフォールバック。
   const positionRaw = args.position ?? "menu";
-  const position = positionRaw === "primary" ? "first" : positionRaw;
+  const positionMap: Record<string, string> = {
+    primary: "left",
+    first: "left",
+    next: "left",
+    middle: "center",
+    later: "right",
+    last: "right",
+  };
+  const position = positionMap[positionRaw] ?? positionRaw;
   const icon = args.icon ?? "fa-list-ul";
   const menuOrder = args.menuOrder ?? 1;
   const showIf = args.showIf ? normalizeFormula(args.showIf) : null;
