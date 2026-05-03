@@ -624,21 +624,32 @@ AppBots[]       Bot 本体（名前・有効/無効・EventName・ProcessName）
 
 ### 6.2 View タイプ (`Action` フィールドの値)
 
-| Action 値 | $type (Settings/ViewDefinition) | 用途 |
+| Action 値 | $type (Settings/ViewDefinition) | 必須/特徴フィールド |
 |----------|--------------------------------|------|
-| `table` | `TableViewSettings` | テーブル一覧 |
-| `deck` | `DeckViewSettings` | カード一覧 |
-| `gallery` | `GalleryViewSettings` | サムネ一覧 |
-| `detail` | `DetailViewSettings` | 詳細表示 |
-| `form` | `FormViewSettings` | 入力フォーム |
-| `dashboard` | `DashboardViewSettings` | 複数 View の組合せ表示 |
-| `onboarding` | `OnboardingViewSettings` | オンボーディング |
-| `chart` | `ChartViewSettings` | グラフ |
-| `calendar` | `CalendarViewSettings` | カレンダー |
-| `map` | `MapViewSettings` | 地図 |
-| `gantt` | `GanttViewSettings` | ガント |
-| `card` | `CardViewSettings` | カード詳細 |
-| `kanban` | `KanbanViewSettings` | カンバン |
+| `table` | `TableViewSettings` | ColumnWidth / EnableQuickEdit / ColumnOrder |
+| `deck` | `DeckViewSettings` | MainDeckImageColumn / ImageShape / DeckHeader 系 |
+| `gallery` | `GalleryViewSettings` | ImageSize |
+| `detail` | **`SlideshowViewSettings`** ⚠️ | MainSlideshowImageColumn / DetailContentColumn / Layout |
+| `form` | `FormViewSettings` | ColumnOrder / AutoSave / FinishView / RowKey |
+| `dashboard` | `DashboardViewSettings` | **ViewEntries 必須**（子 View 名 + ViewSize 配列） |
+| `onboarding` | `OnboardingViewSettings` | Image / Title / FirstBlurb / FinishView |
+| `chart` | `ChartViewSettings` | **ChartType 必須**（Histogram 等）/ ChartColumns / GroupAggregate |
+| `calendar` | `CalendarViewSettings` | **StartDateColumn 必須** / EndDateColumn / LabelColumn |
+| `map` | `MapViewSettings` | **MapColumn 必須**（Address/LatLong 列名）/ MapType |
+| `card` | `CardViewSettings` | MainDeckImageColumn / ImageShape / DeckHeader 系（deck と類似） |
+
+**注意**:
+
+- `detail` の $type は **`SlideshowViewSettings`** で、`DetailViewSettings` ではない（実物 HAR で確認・2026-05-03 時点）
+- `kanban` / `gantt` は AppSheet の現行 UI から **削除されている**（2026-05-03 時点で View Type 選択肢に表示されない）
+
+**実装注意**:
+
+- View タイプは `Action` フィールド（小文字文字列）に格納される。`ActionType` は通常 null
+- `Settings` (JSON 文字列) と `ViewDefinition` (オブジェクト) は**同内容を二重に持つ**。saveapp 送信時は両方更新する
+- 全タイプ共通フィールド: `MenuOrder`, `Icon`, `IconRunnerUps`, `Events`
+- 多くのタイプで共通: `GroupBy`, `GroupAggregate`, `SortBy`, `PrimarySortColumn`, `IsPrimarySortDescending`
+- タイプ固有フィールドは `$type` ごとに異なる
 
 **実装注意**:
 

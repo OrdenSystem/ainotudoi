@@ -1664,31 +1664,244 @@ export async function createTable(args: {
   };
 }
 
+type ViewType =
+  | "table"
+  | "card"
+  | "detail"
+  | "form"
+  | "deck"
+  | "dashboard"
+  | "calendar"
+  | "map"
+  | "chart"
+  | "gallery"
+  | "onboarding";
+
+const VIEW_VERSION: Record<ViewType, number> = {
+  table: 3,
+  card: 2,
+  detail: 2,
+  form: 2,
+  deck: 2,
+  dashboard: 2,
+  calendar: 2,
+  map: 2,
+  chart: 2,
+  gallery: 2,
+  onboarding: 2,
+};
+
+function buildViewDefinition(
+  viewType: ViewType,
+  options: Record<string, unknown>,
+  icon: string,
+  menuOrder: number,
+): Record<string, unknown> {
+  const common = { Icon: icon, IconRunnerUps: null, MenuOrder: menuOrder };
+  switch (viewType) {
+    case "table":
+      return {
+        $type: "Jeenee.DataTypes.TableViewSettings, Jeenee.DataTypes",
+        ColumnWidth: options.columnWidth ?? "Default",
+        EnableQuickEdit: options.enableQuickEdit ?? false,
+        ColumnOrder: options.columnOrder ?? [],
+        GroupBy: [],
+        GroupAggregate: "NONE",
+        SortBy: [],
+        PrimarySortColumn: null,
+        IsPrimarySortDescending: false,
+        Events: [{ EventType: "Row Selected", EventAction: "**auto**" }],
+        ...common,
+      };
+    case "card":
+      return {
+        $type: "Jeenee.DataTypes.CardViewSettings, Jeenee.DataTypes",
+        Layout: options.layout ?? null,
+        MainDeckImageColumn: options.mainDeckImageColumn ?? "**auto**",
+        ImageShape: options.imageShape ?? "Square Image",
+        PrimaryDeckHeaderColumn: options.primaryDeckHeaderColumn ?? "**auto**",
+        SecondaryDeckHeaderColumn: options.secondaryDeckHeaderColumn ?? "**auto**",
+        DeckSummaryColumn: options.deckSummaryColumn ?? "**auto**",
+        DeckNestedTableColumn: options.deckNestedTableColumn ?? null,
+        ShowActionBar: options.showActionBar ?? true,
+        ActionColumns: [],
+        ActionBarEntries: null,
+        GroupBy: [],
+        GroupAggregate: "NONE",
+        SortBy: [],
+        PrimarySortColumn: null,
+        IsPrimarySortDescending: false,
+        Events: [],
+        ...common,
+      };
+    case "detail":
+      return {
+        $type: "Jeenee.DataTypes.SlideshowViewSettings, Jeenee.DataTypes",
+        MainSlideshowImageColumn: options.mainSlideshowImageColumn ?? "**auto**",
+        DetailContentColumn: options.detailContentColumn ?? "**none**",
+        HeaderColumns: options.headerColumns ?? [],
+        QuickEditColumns: options.quickEditColumns ?? [],
+        ColumnOrder: options.columnOrder ?? [],
+        ImageStyle: options.imageStyle ?? "Fill",
+        Layout: options.layout ?? null,
+        UseCardLayout: options.useCardLayout ?? false,
+        DisplayMode: options.displayMode ?? "Automatic",
+        MaxNestedRows: options.maxNestedRows ?? 5,
+        SlideshowMode: options.slideshowMode ?? true,
+        DesktopSplitMode: options.desktopSplitMode ?? "Split view",
+        UseDesktopMultiColumn: options.useDesktopMultiColumn ?? true,
+        SortBy: [],
+        PrimarySortColumn: null,
+        IsPrimarySortDescending: false,
+        Events: [],
+        ...common,
+      };
+    case "form":
+      return {
+        $type: "Jeenee.DataTypes.FormViewSettings, Jeenee.DataTypes",
+        ColumnOrder: options.columnOrder ?? null,
+        AutoSave: options.autoSave ?? false,
+        AutoReopen: options.autoReopen ?? false,
+        FinishView: options.finishView ?? "**Automatic**",
+        RowKey: options.rowKey ?? "",
+        FormStyle: options.formStyle ?? "Automatic",
+        PageStyle: options.pageStyle ?? "Automatic",
+        FormFooterStyle: options.formFooterStyle ?? "Bottom",
+        MaxNestedRows: options.maxNestedRows ?? 5,
+        AudioInput: options.audioInput ?? false,
+        Events: [{ EventType: "Form Saved", EventAction: "**auto**" }],
+        ...common,
+      };
+    case "deck":
+      return {
+        $type: "Jeenee.DataTypes.DeckViewSettings, Jeenee.DataTypes",
+        MainDeckImageColumn: options.mainDeckImageColumn ?? "**auto**",
+        ImageShape: options.imageShape ?? "Square Image",
+        PrimaryDeckHeaderColumn: options.primaryDeckHeaderColumn ?? "**auto**",
+        SecondaryDeckHeaderColumn: options.secondaryDeckHeaderColumn ?? "**auto**",
+        DeckSummaryColumn: options.deckSummaryColumn ?? "**auto**",
+        DeckNestedTableColumn: options.deckNestedTableColumn ?? null,
+        ShowActionBar: options.showActionBar ?? true,
+        ActionColumns: [],
+        ActionBarEntries: [],
+        GroupBy: [],
+        GroupAggregate: "NONE",
+        SortBy: [],
+        PrimarySortColumn: null,
+        IsPrimarySortDescending: false,
+        Events: [
+          { EventType: "Row Selected", EventAction: "**auto**" },
+          { EventType: "Row Swiped Left", EventAction: "**auto**" },
+          { EventType: "Row Swiped Right", EventAction: "**auto**" },
+        ],
+        ...common,
+      };
+    case "dashboard": {
+      const viewEntries = options.viewEntries;
+      if (!Array.isArray(viewEntries) || viewEntries.length === 0) {
+        throw new Error(
+          "dashboard には options.viewEntries が必須。例: [{ ViewName: 'XX_Detail', ViewSize: 'Tall' }]",
+        );
+      }
+      return {
+        $type: "Jeenee.DataTypes.DashboardViewSettings, Jeenee.DataTypes",
+        ViewEntries: viewEntries,
+        InteractiveMode: options.interactiveMode ?? false,
+        ShowTabs: options.showTabs ?? false,
+        Events: [],
+        ...common,
+      };
+    }
+    case "calendar":
+      if (!options.startDateColumn) {
+        throw new Error("calendar には options.startDateColumn が必須");
+      }
+      return {
+        $type: "Jeenee.DataTypes.CalendarViewSettings, Jeenee.DataTypes",
+        StartDateColumn: options.startDateColumn,
+        StartTimeColumn: options.startTimeColumn ?? options.startDateColumn,
+        EndDateColumn: options.endDateColumn ?? options.startDateColumn,
+        EndTimeColumn: options.endTimeColumn ?? options.startDateColumn,
+        LabelColumn: options.labelColumn ?? null,
+        CategoryColumn: options.categoryColumn ?? "**auto**",
+        DefaultCalendarView: options.defaultCalendarView ?? "Month",
+        ColumnOrder: options.columnOrder ?? [],
+        GroupBy: [],
+        GroupAggregate: "NONE",
+        SortBy: [],
+        PrimarySortColumn: null,
+        IsPrimarySortDescending: false,
+        Events: [],
+        ...common,
+      };
+    case "map":
+      return {
+        $type: "Jeenee.DataTypes.MapViewSettings, Jeenee.DataTypes",
+        MapType: options.mapType ?? "Automatic",
+        MapColumn: options.mapColumn ?? "**none**",
+        LocationMode: options.locationMode ?? "Normal",
+        SecondaryTable: options.secondaryTable ?? null,
+        SecondaryColumn: options.secondaryColumn ?? "**none**",
+        MinimumClusterSize: options.minimumClusterSize ?? 0,
+        Events: [],
+        ...common,
+      };
+    case "chart":
+      return {
+        $type: "Jeenee.DataTypes.ChartViewSettings, Jeenee.DataTypes",
+        ChartType: options.chartType ?? "Histogram",
+        UseNewChartExperience: options.useNewChartExperience ?? false,
+        ChartConfig: options.chartConfig ?? null,
+        ChartColumns: options.chartColumns ?? [],
+        GroupAggregate: options.groupAggregate ?? "COUNT",
+        TrendLine: options.trendLine ?? "None",
+        ChartColors: options.chartColors ?? [],
+        LabelType: options.labelType ?? "Percent",
+        ShowLegend: options.showLegend ?? true,
+        SortBy: [],
+        Events: [],
+        ...common,
+      };
+    case "gallery":
+      return {
+        $type: "Jeenee.DataTypes.GalleryViewSettings, Jeenee.DataTypes",
+        ImageSize: options.imageSize ?? "Medium",
+        ActionBarEntries: null,
+        SortBy: [],
+        PrimarySortColumn: null,
+        IsPrimarySortDescending: false,
+        Events: [{ EventType: "Row Selected", EventAction: "**auto**" }],
+        ...common,
+      };
+    case "onboarding":
+      return {
+        $type: "Jeenee.DataTypes.OnboardingViewSettings, Jeenee.DataTypes",
+        Image: options.image ?? "",
+        Title: options.title ?? "",
+        FirstBlurb: options.firstBlurb ?? "",
+        FinishView: options.finishView ?? null,
+        GroupBy: [],
+        GroupAggregate: "NONE",
+        SortBy: [],
+        PrimarySortColumn: null,
+        IsPrimarySortDescending: false,
+        Events: [],
+        ...common,
+      };
+  }
+}
+
 export async function createView(args: {
   appId?: string;
   appName?: string;
   viewName: string;
   tableName: string;
-  viewType: "table" | "card";
+  viewType: ViewType;
   position?: "primary" | "menu" | "ref" | "none";
   showIf?: string;
   icon?: string;
   menuOrder?: number;
-  options?: {
-    // table 固有
-    columnWidth?: "Default" | "Auto" | "Wide" | "Compact";
-    enableQuickEdit?: boolean;
-    columnOrder?: string[];
-    // card 固有
-    imageShape?: "Square Image" | "Circle Image" | "Rectangle Image";
-    mainDeckImageColumn?: string;
-    primaryDeckHeaderColumn?: string;
-    secondaryDeckHeaderColumn?: string;
-    deckSummaryColumn?: string;
-    deckNestedTableColumn?: string | null;
-    showActionBar?: boolean;
-    layout?: string | null;
-  };
+  options?: Record<string, unknown>;
   apply?: boolean;
 }): Promise<{
   dryRun: boolean;
@@ -1724,53 +1937,9 @@ export async function createView(args: {
   const menuOrder = args.menuOrder ?? 1;
   const showIf = args.showIf ? normalizeFormula(args.showIf) : null;
 
-  // タイプ別 ViewDefinition / Settings を構築
-  let viewDefinition: Record<string, unknown>;
-  if (args.viewType === "table") {
-    const opts = args.options ?? {};
-    viewDefinition = {
-      $type: "Jeenee.DataTypes.TableViewSettings, Jeenee.DataTypes",
-      ColumnWidth: opts.columnWidth ?? "Default",
-      EnableQuickEdit: opts.enableQuickEdit ?? false,
-      ColumnOrder: opts.columnOrder ?? [],
-      GroupBy: [],
-      GroupAggregate: "NONE",
-      SortBy: [],
-      PrimarySortColumn: null,
-      IsPrimarySortDescending: false,
-      Events: [{ EventType: "Row Selected", EventAction: "**auto**" }],
-      Icon: icon,
-      IconRunnerUps: null,
-      MenuOrder: menuOrder,
-    };
-  } else if (args.viewType === "card") {
-    const opts = args.options ?? {};
-    viewDefinition = {
-      $type: "Jeenee.DataTypes.CardViewSettings, Jeenee.DataTypes",
-      Layout: opts.layout ?? null,
-      MainDeckImageColumn: opts.mainDeckImageColumn ?? "**auto**",
-      ImageShape: opts.imageShape ?? "Square Image",
-      PrimaryDeckHeaderColumn: opts.primaryDeckHeaderColumn ?? "**auto**",
-      SecondaryDeckHeaderColumn: opts.secondaryDeckHeaderColumn ?? "**auto**",
-      DeckSummaryColumn: opts.deckSummaryColumn ?? "**auto**",
-      DeckNestedTableColumn: opts.deckNestedTableColumn ?? null,
-      ShowActionBar: opts.showActionBar ?? true,
-      ActionColumns: [],
-      ActionBarEntries: null,
-      GroupBy: [],
-      GroupAggregate: "NONE",
-      SortBy: [],
-      PrimarySortColumn: null,
-      IsPrimarySortDescending: false,
-      Events: [],
-      Icon: icon,
-      IconRunnerUps: null,
-      MenuOrder: menuOrder,
-    };
-  } else {
-    throw new Error(`未対応の viewType: '${args.viewType}'。現在対応: table / card`);
-  }
-
+  // タイプ別 ViewDefinition を buildViewDefinition で構築
+  const opts = args.options ?? {};
+  const viewDefinition = buildViewDefinition(args.viewType, opts, icon, menuOrder);
   const settings = JSON.stringify(viewDefinition);
   const componentId = generateComponentId();
 
@@ -1795,7 +1964,7 @@ export async function createView(args: {
     ComponentId: componentId,
     _isCopy: false,
     _isNew: true,
-    _version: args.viewType === "table" ? 3 : 2,
+    _version: VIEW_VERSION[args.viewType] ?? 2,
     _index: controls.length,
     _path: `Presentation.Controls[${controls.length}]`,
     _isSystemGenerated: false,

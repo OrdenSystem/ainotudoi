@@ -637,7 +637,7 @@ const tools: Tool[] = [
   {
     name: "appsheet_create_view",
     description:
-      "View (Presentation.Controls の要素) を新規作成する。現在対応: table / card。viewType ごとに ViewDefinition の $type と固有設定が分岐。Settings (JSON 文字列) と ViewDefinition (オブジェクト) を両方構築。デフォルト dry-run。",
+      "View (Presentation.Controls の要素) を新規作成する。対応: table / card / detail / form / deck / dashboard / calendar / map / chart / gallery / onboarding (11 種)。kanban / gantt は AppSheet 現行 UI から削除されているため未対応。viewType ごとに ViewDefinition の $type と必須/特徴フィールドが異なる。Settings (JSON 文字列) と ViewDefinition (オブジェクト) を両方構築。デフォルト dry-run。",
     inputSchema: {
       type: "object",
       properties: {
@@ -647,23 +647,31 @@ const tools: Tool[] = [
         tableName: { type: "string", description: "対象テーブル or Slice 名" },
         viewType: {
           type: "string",
-          enum: ["table", "card"],
-          description: "View タイプ。現在対応は table / card のみ。他タイプは HAR 取得後に追加予定。",
+          enum: ["table", "card", "detail", "form", "deck", "dashboard", "calendar", "map", "chart", "gallery", "onboarding"],
+          description: "View タイプ。calendar は startDateColumn 必須・dashboard は viewEntries 必須・detail の $type は SlideshowViewSettings",
         },
         position: {
           type: "string",
           enum: ["primary", "menu", "ref", "none"],
           description: "表示位置。デフォルト menu",
         },
-        showIf: {
-          type: "string",
-          description: "表示条件式（任意）。例: 'USEREMAIL() = \"admin@example.com\"'",
-        },
+        showIf: { type: "string", description: "表示条件式（任意）" },
         icon: { type: "string", description: "FontAwesome アイコン名。デフォルト fa-list-ul" },
         menuOrder: { type: "number", description: "メニュー内の並び順。デフォルト 1" },
         options: {
           type: "object",
-          description: "viewType 別の固有設定。table: {columnWidth, enableQuickEdit, columnOrder}。card: {imageShape, mainDeckImageColumn, primaryDeckHeaderColumn, secondaryDeckHeaderColumn, deckSummaryColumn, showActionBar}",
+          description:
+            "viewType 別の固有設定。\n" +
+            "・table: {columnWidth, enableQuickEdit, columnOrder}\n" +
+            "・card/deck: {imageShape, mainDeckImageColumn, primaryDeckHeaderColumn, secondaryDeckHeaderColumn, deckSummaryColumn, showActionBar}\n" +
+            "・detail: {mainSlideshowImageColumn, detailContentColumn, headerColumns, quickEditColumns, columnOrder, imageStyle, displayMode, useCardLayout}\n" +
+            "・form: {columnOrder, autoSave, autoReopen, finishView, formStyle, pageStyle, audioInput}\n" +
+            "・dashboard: {viewEntries: [{ViewName, ViewSize: 'Tall'|'Short'}], interactiveMode, showTabs} ★viewEntries 必須\n" +
+            "・calendar: {startDateColumn, endDateColumn, labelColumn, categoryColumn, defaultCalendarView} ★startDateColumn 必須\n" +
+            "・map: {mapColumn, mapType, locationMode, secondaryTable, secondaryColumn}\n" +
+            "・chart: {chartType, chartColumns, groupAggregate, trendLine, chartColors, labelType, showLegend}\n" +
+            "・gallery: {imageSize}\n" +
+            "・onboarding: {image, title, firstBlurb, finishView}",
         },
         apply: { type: "boolean" },
       },
