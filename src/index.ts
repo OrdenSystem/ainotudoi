@@ -1,5 +1,14 @@
 #!/usr/bin/env node
-import "dotenv/config";
+import { config as dotenvConfig } from "dotenv";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// MCP サーバーは process.cwd() が呼出側次第で変わるため、
+// __dirname 基準で .env を絶対パスで読み込む（dist/ から見て ../.env）
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+dotenvConfig({ path: resolve(__dirname, "..", ".env") });
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -62,6 +71,7 @@ import {
   removeSlice,
   addCallScriptTask,
   createTable,
+  createView,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -625,6 +635,50 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_create_view",
+    description:
+      "View (Presentation.Controls の要素) を新規作成する。対応: table / card / detail / form / deck / dashboard / calendar / map / chart / gallery / onboarding (11 種)。kanban / gantt は AppSheet 現行 UI から削除されているため未対応。viewType ごとに ViewDefinition の $type と必須/特徴フィールドが異なる。Settings (JSON 文字列) と ViewDefinition (オブジェクト) を両方構築。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        viewName: { type: "string", description: "View 名（アプリ内一意）" },
+        tableName: { type: "string", description: "対象テーブル or Slice 名" },
+        viewType: {
+          type: "string",
+          enum: ["table", "card", "detail", "form", "deck", "dashboard", "calendar", "map", "chart", "gallery", "onboarding"],
+          description: "View タイプ。calendar は startDateColumn 必須・dashboard は viewEntries 必須・detail の $type は SlideshowViewSettings",
+        },
+        position: {
+          type: "string",
+          enum: ["primary", "menu", "ref", "none"],
+          description: "表示位置。デフォルト menu",
+        },
+        showIf: { type: "string", description: "表示条件式（任意）" },
+        icon: { type: "string", description: "FontAwesome アイコン名。デフォルト fa-list-ul" },
+        menuOrder: { type: "number", description: "メニュー内の並び順。デフォルト 1" },
+        options: {
+          type: "object",
+          description:
+            "viewType 別の固有設定。\n" +
+            "・table: {columnWidth, enableQuickEdit, columnOrder}\n" +
+            "・card/deck: {imageShape, mainDeckImageColumn, primaryDeckHeaderColumn, secondaryDeckHeaderColumn, deckSummaryColumn, showActionBar}\n" +
+            "・detail: {mainSlideshowImageColumn, detailContentColumn, headerColumns, quickEditColumns, columnOrder, imageStyle, displayMode, useCardLayout}\n" +
+            "・form: {columnOrder, autoSave, autoReopen, finishView, formStyle, pageStyle, audioInput}\n" +
+            "・dashboard: {viewEntries: [{ViewName, ViewSize: 'Tall'|'Short'}], interactiveMode, showTabs} ★viewEntries 必須\n" +
+            "・calendar: {startDateColumn, endDateColumn, labelColumn, categoryColumn, defaultCalendarView} ★startDateColumn 必須\n" +
+            "・map: {mapColumn, mapType, locationMode, secondaryTable, secondaryColumn}\n" +
+            "・chart: {chartType, chartColumns, groupAggregate, trendLine, chartColors, labelType, showLegend}\n" +
+            "・gallery: {imageSize}\n" +
+            "・onboarding: {image, title, firstBlurb, finishView}",
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["viewName", "tableName", "viewType"],
+    },
+  },
+  {
     name: "appsheet_create_table",
     description:
       "既存データソースの別シート/SQL テーブルを AppSheet に取り込む（DataSet 1 件追加・Schema は AppSheet 側で自動生成）。テンプレ既存テーブルからデータソース接続情報をコピー。SourceQualifier はデータソース上のシート名や SQL テーブル名。新規データソース接続は GUI 必須でこのツールでは扱えない。デフォルト dry-run。",
@@ -947,6 +1001,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addCallScriptTask(args as Parameters<typeof addCallScriptTask>[0]);
     case "appsheet_create_table":
       return createTable(args as Parameters<typeof createTable>[0]);
+    case "appsheet_create_view":
+      return createView(args as Parameters<typeof createView>[0]);
     default:
       throw new Error(`未知のツール: ${name}`);
   }

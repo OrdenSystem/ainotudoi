@@ -614,30 +614,49 @@ AppBots[]       Bot 本体（名前・有効/無効・EventName・ProcessName）
 |-----------|------|
 | `Name`, `DisplayName` | View 名・表示名 |
 | `TableOrFolderName` | 対象テーブル / Slice |
-| `ActionType` | View タイプ（次表） |
+| `Action` | **View タイプ**（`"table"` / `"card"` / `"detail"` 等の小文字文字列） |
+| `ActionType` | 通常 `null`（Action 系のフィールド名と紛らわしいが、View では未使用） |
 | `Position` | 表示位置（`primary` / `menu` / `ref` / `none`） |
 | `ShowIf` | 表示条件式（USEREMAIL() で出し分け等） |
-| `ViewDefinition` | View タイプ固有の詳細設定 |
-| `Settings` | 共通設定 |
+| `Settings` | View タイプ固有設定の **JSON 文字列**（`$type` 含む） |
+| `ViewDefinition` | Settings と同じ内容を**オブジェクトで保持**（送信時は両方更新） |
 | `Parameters` | パラメータ（一部 View タイプで使用） |
 
-### 6.2 View タイプ (`ActionType`)
+### 6.2 View タイプ (`Action` フィールドの値)
 
-| ActionType | 用途 |
-|-----------|------|
-| `table` | テーブル一覧 |
-| `deck` | カード一覧 |
-| `gallery` | サムネ一覧 |
-| `detail` | 詳細表示 |
-| `form` | 入力フォーム |
-| `dashboard` | 複数 View の組合せ表示 |
-| `onboarding` | オンボーディング |
-| `chart` | グラフ |
-| `calendar` | カレンダー |
-| `map` | 地図 |
-| `gantt` | ガント |
-| `card` | カード詳細 |
-| `kanban` | カンバン |
+| Action 値 | $type (Settings/ViewDefinition) | 必須/特徴フィールド |
+|----------|--------------------------------|------|
+| `table` | `TableViewSettings` | ColumnWidth / EnableQuickEdit / ColumnOrder |
+| `deck` | `DeckViewSettings` | MainDeckImageColumn / ImageShape / DeckHeader 系 |
+| `gallery` | `GalleryViewSettings` | ImageSize |
+| `detail` | **`SlideshowViewSettings`** ⚠️ | MainSlideshowImageColumn / DetailContentColumn / Layout |
+| `form` | `FormViewSettings` | ColumnOrder / AutoSave / FinishView / RowKey |
+| `dashboard` | `DashboardViewSettings` | **ViewEntries 必須**（子 View 名 + ViewSize 配列） |
+| `onboarding` | `OnboardingViewSettings` | Image / Title / FirstBlurb / FinishView |
+| `chart` | `ChartViewSettings` | **ChartType 必須**（Histogram 等）/ ChartColumns / GroupAggregate |
+| `calendar` | `CalendarViewSettings` | **StartDateColumn 必須** / EndDateColumn / LabelColumn |
+| `map` | `MapViewSettings` | **MapColumn 必須**（Address/LatLong 列名）/ MapType |
+| `card` | `CardViewSettings` | MainDeckImageColumn / ImageShape / DeckHeader 系（deck と類似） |
+
+**注意**:
+
+- `detail` の $type は **`SlideshowViewSettings`** で、`DetailViewSettings` ではない（実物 HAR で確認・2026-05-03 時点）
+- `kanban` / `gantt` は AppSheet の現行 UI から **削除されている**（2026-05-03 時点で View Type 選択肢に表示されない）
+
+**実装注意**:
+
+- View タイプは `Action` フィールド（小文字文字列）に格納される。`ActionType` は通常 null
+- `Settings` (JSON 文字列) と `ViewDefinition` (オブジェクト) は**同内容を二重に持つ**。saveapp 送信時は両方更新する
+- 全タイプ共通フィールド: `MenuOrder`, `Icon`, `IconRunnerUps`, `Events`
+- 多くのタイプで共通: `GroupBy`, `GroupAggregate`, `SortBy`, `PrimarySortColumn`, `IsPrimarySortDescending`
+- タイプ固有フィールドは `$type` ごとに異なる
+
+**実装注意**:
+
+- View タイプは `Action` フィールド（小文字文字列）に格納される。`ActionType` は通常 null
+- `Settings` (JSON 文字列) と `ViewDefinition` (オブジェクト) は**同内容を二重に持つ**。saveapp 送信時は両方更新する
+- 全タイプ共通フィールド: `MenuOrder`, `Icon`, `IconRunnerUps`, `GroupBy`, `GroupAggregate`, `SortBy`, `PrimarySortColumn`, `IsPrimarySortDescending`, `Events`
+- タイプ固有フィールドは `$type` ごとに異なる（例: `TableViewSettings.ColumnWidth` / `CardViewSettings.MainDeckImageColumn` 等）
 
 ### 6.3 MenuEntries
 

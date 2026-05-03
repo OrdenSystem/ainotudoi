@@ -16,12 +16,16 @@ GCP / Salesforce / SQL は Claude Code から API 経由で操作できるが、
 ## セットアップ
 
 ```bash
+git clone git@github.com:lab-masuyama/AppsheetMCP.git appsheet-mcp
 cd appsheet-mcp
 npm install
+npm run setup            # ← everything-claude-code (ECG) を ~/.claude/ に clone or pull
 cp .env.example .env
 # .env を編集して APPSHEET_DEFAULT_APP_ID と APPSHEET_ACCESS_KEY__<APP_ID> を設定
 npm run build
 ```
+
+`npm run setup` は [`affaan-m/everything-claude-code`](https://github.com/affaan-m/everything-claude-code) を `~/.claude/everything-claude-code/` に同期します（既存なら `git pull --rebase --autostash`、無ければ `git clone --depth=1`）。これで Claude Code から AppsheetMCP のサブエージェント（`.claude/agents/appsheet-*`）と ECG のエージェント・スキル・コマンドの両方が利用可能になります。Claude Code 再起動後に有効化されます。
 
 ### `.env` の書き方
 
