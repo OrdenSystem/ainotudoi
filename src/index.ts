@@ -1,5 +1,14 @@
 #!/usr/bin/env node
-import "dotenv/config";
+import { config as dotenvConfig } from "dotenv";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// MCP サーバーは process.cwd() が呼出側次第で変わるため、
+// __dirname 基準で .env を絶対パスで読み込む（dist/ から見て ../.env）
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+dotenvConfig({ path: resolve(__dirname, "..", ".env") });
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
