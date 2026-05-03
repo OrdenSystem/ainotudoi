@@ -78,14 +78,21 @@ const tools: Tool[] = [
   {
     name: "appsheet_find_records",
     description:
-      "AppSheet API v2 の Find アクションでテーブルからレコードを取得する。selector に AppSheet 式（FILTER/SELECT 等）を渡せる。",
+      "AppSheet API v2 の Find アクションでテーブルからレコードを取得する。\n" +
+      "selector の書式: \n" +
+      '・推奨: \'Filter("テーブル名", boolean式)\' / \'Select(テーブル[列], cond)\'\n' +
+      "・boolean 式単体（例: '[ステータス] = \"未処理\"'）を渡すと**自動的に Filter() でラップ**される（DX 改善）\n" +
+      "・空文字 / 省略時は全件取得（ただし AppSheet 側の上限あり）\n" +
+      "AppSheet API は selector 不一致だとエラーでなく **0 件返却**するので注意。",
     inputSchema: {
       type: "object",
       properties: {
         tableName: { type: "string", description: "AppSheet 上のテーブル名（日本語可）" },
         selector: {
           type: "string",
-          description: 'AppSheet 式。例: \'Filter("記事管理", [ステータス] = "未処理")\'',
+          description:
+            'AppSheet 式。Filter("table", expr) ラッパー必須（boolean 単体は自動ラップ）。' +
+            '例: \'Filter("記事管理", [ステータス] = "未処理")\' / \'[ステータス] = "未処理"\' (自動ラップ)',
         },
         appId: { type: "string", description: "対象 App ID（省略時は .env 既定）" },
         locale: { type: "string" },
@@ -652,8 +659,14 @@ const tools: Tool[] = [
         },
         position: {
           type: "string",
-          enum: ["primary", "menu", "ref", "none"],
-          description: "表示位置。デフォルト menu",
+          enum: ["first", "next", "middle", "later", "last", "menu", "ref", "none", "primary"],
+          description:
+            "表示位置（実 Editor UI 値）:\n" +
+            "・first/next/middle/later/last → PRIMARY NAVIGATION (画面下タブ・左から順)\n" +
+            "・menu → MENU NAVIGATION (左メニュー)\n" +
+            "・ref → REFERENCE VIEWS\n" +
+            "・none → 隠し View\n" +
+            "・primary は first に内部マップ（後方互換・新 Editor で primary は SYSTEM GENERATED 扱いされるため）",
         },
         showIf: { type: "string", description: "表示条件式（任意）" },
         icon: { type: "string", description: "FontAwesome アイコン名。デフォルト fa-list-ul" },
@@ -789,26 +802,50 @@ const tools: Tool[] = [
   {
     name: "appsheet_create_bot",
     description:
-      "Bot を新規作成する（AppBots / AppEvents / AppProcesses の 3 配列を同時追加・名前リンク自動）。Data Change Event でトリガーし、既存 Action を 1 つ実行する最小構成。Email Task 等は別途 Tasks 配列に追加可能。デフォルト dry-run。",
+      "Bot を新規作成する（AppBots / AppEvents / AppProcesses の 3 配列を同時追加・名前リンク自動）。\n" +
+      "Data Change Event または Scheduled Event でトリガー可能:\n" +
+      "・eventType: ADDS_ONLY/UPDATES_ONLY/DELETES_ONLY/ADDS_AND_UPDATES/ADDS_UPDATES_DELETES → Data Change Bot\n" +
+      "・eventType: Scheduled → 時刻トリガー Bot (scheduleConfig.cron 必須)\n" +
+      "Email Task / AppsScript Task 等は別途 Tasks 配列に追加可能。デフォルト dry-run。",
     inputSchema: {
       type: "object",
       properties: {
         appId: { type: "string" },
         appName: { type: "string" },
         botName: { type: "string", description: "Bot 名（アプリ内一意）" },
-        tableName: { type: "string", description: "監視対象テーブル名" },
+        tableName: { type: "string", description: "監視対象テーブル名（Scheduled 時は対象テーブル）" },
         actionName: {
           type: "string",
           description: "Bot が実行する既存 Action の名前。Action は tableName と一致するテーブル所属である必要あり",
         },
         eventType: {
           type: "string",
-          enum: ["ADDS_ONLY", "UPDATES_ONLY", "DELETES_ONLY", "ADDS_AND_UPDATES", "ADDS_UPDATES_DELETES"],
-          description: "発火する変更種別。デフォルト ADDS_AND_UPDATES",
+          enum: ["ADDS_ONLY", "UPDATES_ONLY", "DELETES_ONLY", "ADDS_AND_UPDATES", "ADDS_UPDATES_DELETES", "Scheduled"],
+          description: "発火種別。デフォルト ADDS_AND_UPDATES。Scheduled の場合は scheduleConfig 必須",
         },
         filterCondition: {
           type: "string",
-          description: "イベントフィルタ条件式。デフォルト TRUE（全変更）。例: '[ステータス] = \"承認済み\"'",
+          description: "イベントフィルタ条件式。例: '[ステータス] = \"承認済み\"'。デフォルト Change 系は TRUE / Scheduled 系は \"true\"",
+        },
+        scheduleConfig: {
+          type: "object",
+          description: "eventType: 'Scheduled' の場合のみ必須",
+          properties: {
+            cron: {
+              type: "string",
+              description: "5 フィールド cron 形式。例: '0 12 * * *' (毎日 12:00) / '0 9 * * 1' (毎週月曜 9:00) / '0 12 1 * *' (毎月 1 日 12:00)",
+            },
+            timeZone: {
+              type: "string",
+              description: "Windows タイムゾーン形式。例: 'Tokyo Standard Time' (デフォルト) / 'Pacific Standard Time' / 'UTC'。IANA 形式 (Asia/Tokyo) ではない",
+            },
+            forEachRowInTable: {
+              type: "boolean",
+              description: "true でテーブルの各行に対して実行、false でテーブル単位で 1 回実行。デフォルト true",
+            },
+            region: { type: "string", description: "通常 \"\" のまま。リージョン指定が必要な場合のみ" },
+          },
+          required: ["cron"],
         },
         disabled: { type: "boolean", description: "Bot 無効状態で作成。デフォルト false" },
         apply: { type: "boolean" },

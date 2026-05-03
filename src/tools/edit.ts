@@ -108,6 +108,53 @@ async function postSaveApp(appId: string, appName: string, app: AppDef): Promise
   return { status: r.status, success: true, errorDescription: parsed.ErrorDescription, retryable: parsed.Retryable, app: savedApp };
 }
 
+/**
+ * 409 Version Conflict 対応の saveapp ラッパ。
+ * applyFn を「app に対する変更ロジック」として受け取り、初回送信失敗時は
+ * fetchLoadApp で最新版を再取得 → applyFn を再適用 → 再送信を最大 maxRetries 回繰り返す。
+ *
+ * 呼出側パターン:
+ *   const componentId = generateComponentId();   // 新規エンティティの場合は 1 回だけ生成
+ *   const applyFn = (a: AppDef) => { ... ComponentId: componentId など固定値で組立 ... };
+ *   applyFn(app);  // dry-run 表示用に初回適用
+ *   if (!args.apply) return { dryRun: true, ... };
+ *   const { result, refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+ */
+async function applyChangesAndSave(
+  credential: { appId: string },
+  appName: string,
+  applyFn: (app: AppDef) => void,
+  initialApp: AppDef,
+  maxRetries = 4,
+): Promise<{ result: SaveAppResponse; refreshed: AppDef }> {
+  let app = initialApp;
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await postSaveApp(credential.appId, appName, app);
+      const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+      return { result, refreshed };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const is409 = msg.includes("saveapp 失敗: 409");
+      if (is409 && attempt < maxRetries) {
+        const waitMs = 1500 * (attempt + 1);
+        log.info("saveapp 409 conflict, retrying", { attempt: attempt + 1, waitMs });
+        await new Promise((r) => setTimeout(r, waitMs));
+        const fresh = (await fetchLoadApp(appName)).app;
+        applyFn(fresh);
+        app = fresh;
+        lastError = e;
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastError instanceof Error
+    ? new Error(`saveapp が ${maxRetries} 回リトライしても 409 で失敗。最後のエラー: ${lastError.message}`)
+    : new Error(`saveapp が ${maxRetries} 回リトライしても 409 で失敗`);
+}
+
 function findAttribute(app: AppDef, tableName: string, columnName: string): Record<string, unknown> {
   const schemas = app.AppData?.DataSchemas ?? [];
   const sch = schemas.find((s) => s.AutoSchemaFrom === tableName) ?? schemas.find((s) => s.Name === `${tableName}_Schema`);
@@ -190,7 +237,11 @@ export async function setColumnFlag(args: {
     };
   }
 
-  attr[args.flag] = args.value;
+  const applyFn = (a: AppDef) => {
+    const target = findAttribute(a, args.tableName, args.columnName);
+    target[args.flag] = args.value;
+  };
+  applyFn(app);
 
   if (!args.apply) {
     return {
@@ -205,8 +256,7 @@ export async function setColumnFlag(args: {
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
   const after = !!refreshedAttr[args.flag];
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -279,7 +329,11 @@ export async function setColumnType(args: {
     ? undefined
     : `'${before}' → '${args.newType}' は安全リストに含まれていません。互換性が無い場合データ破損の可能性があります。慎重に。`;
 
-  attr.Type = args.newType;
+  const applyFn = (a: AppDef) => {
+    const target = findAttribute(a, args.tableName, args.columnName);
+    target.Type = args.newType;
+  };
+  applyFn(app);
 
   if (!args.apply) {
     return {
@@ -294,8 +348,7 @@ export async function setColumnType(args: {
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
   const after = (refreshedAttr.Type ?? "Unknown") as string;
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -315,9 +368,12 @@ export async function setColumnType(args: {
 }
 
 function generateComponentId(): string {
-  // 26 char Crockford base32 (uppercase + 2-7), AppSheet 互換形式
+  // AppSheet の ComponentId は「K + 26 文字」= 27 文字。"K" 固定プレフィックス。
+  // Issue #3 で判明: 26 文字 + ランダム先頭で生成すると Editor が SYSTEM GENERATED に分類してしまう。
+  // 観測値: App owner 手動作成 / System 自動生成 ともに `K` 始まり 27 文字。
+  // 文字集合は Crockford base32 風（A-Z + 2-7、I/O/L/U 含む）。
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  let id = "";
+  let id = "K";
   for (let i = 0; i < 26; i++) id += chars[Math.floor(Math.random() * 32)];
   return id;
 }
@@ -1002,20 +1058,27 @@ export async function setColumnFormula(args: {
   let before: string | null;
   if (args.kind === "AppFormula") {
     before = (attr.AppFormula ?? null) as string | null;
-    attr.AppFormula = newFormula;
-    // InternalQualifier.AppFormulaExpression を消去して再パースさせる
-    if (attr.InternalQualifier && typeof attr.InternalQualifier === "object") {
-      const iq = attr.InternalQualifier as Record<string, unknown>;
-      delete iq.AppFormulaExpression;
-    }
   } else {
     before = (attr.Default ?? null) as string | null;
-    attr.Default = newFormula;
-    if (attr.InternalQualifier && typeof attr.InternalQualifier === "object") {
-      const iq = attr.InternalQualifier as Record<string, unknown>;
-      delete iq.DefaultExpression;
-    }
   }
+
+  const applyFn = (a: AppDef) => {
+    const target = findAttribute(a, args.tableName, args.columnName);
+    if (args.kind === "AppFormula") {
+      target.AppFormula = newFormula;
+      if (target.InternalQualifier && typeof target.InternalQualifier === "object") {
+        const iq = target.InternalQualifier as Record<string, unknown>;
+        delete iq.AppFormulaExpression;
+      }
+    } else {
+      target.Default = newFormula;
+      if (target.InternalQualifier && typeof target.InternalQualifier === "object") {
+        const iq = target.InternalQualifier as Record<string, unknown>;
+        delete iq.DefaultExpression;
+      }
+    }
+  };
+  applyFn(app);
 
   if (before === newFormula) {
     return {
@@ -1043,8 +1106,7 @@ export async function setColumnFormula(args: {
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
   const after = (args.kind === "AppFormula" ? refreshedAttr.AppFormula : refreshedAttr.Default) as string | null;
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -1198,15 +1260,20 @@ export async function setEnumValues(args: {
   const auxStr = attr.TypeAuxData as string;
   const aux = auxStr ? JSON.parse(auxStr) : {};
   const before = (aux.EnumValues ?? aux.Values ?? []) as string[];
-  aux.EnumValues = args.values;
-  attr.TypeAuxData = JSON.stringify(aux);
+
+  const applyFn = (a: AppDef) => {
+    const target = findAttribute(a, args.tableName, args.columnName);
+    const tAux = target.TypeAuxData ? JSON.parse(target.TypeAuxData as string) : {};
+    tAux.EnumValues = args.values;
+    target.TypeAuxData = JSON.stringify(tAux);
+  };
+  applyFn(app);
 
   if (!args.apply) {
     return { dryRun: true, applied: false, table: args.tableName, column: args.columnName, before, requested: args.values, message: "dry-run" };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
   const refreshedAux = refreshedAttr.TypeAuxData ? JSON.parse(refreshedAttr.TypeAuxData as string) : {};
   const after = (refreshedAux.EnumValues ?? refreshedAux.Values ?? []) as string[];
@@ -1505,7 +1572,11 @@ export async function setColumnDescription(args: {
     };
   }
 
-  attr.Description = args.description;
+  const applyFn = (a: AppDef) => {
+    const target = findAttribute(a, args.tableName, args.columnName);
+    target.Description = args.description;
+  };
+  applyFn(app);
 
   if (!args.apply) {
     return {
@@ -1519,8 +1590,7 @@ export async function setColumnDescription(args: {
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
   const after = (refreshedAttr.Description ?? null) as string | null;
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -1552,6 +1622,7 @@ export async function createTable(args: {
   newTableName: string;
   templateTableName: string;
   componentId?: string;
+  schemaReady?: boolean;
   message: string;
   warning?: string;
 }> {
@@ -1575,62 +1646,68 @@ export async function createTable(args: {
       throw new Error(`テンプレ '${args.templateTableName}' が見つかりません`);
     }
   } else {
-    // ユーザー作成のテーブル（IsAutoCreated でない）を優先
     template = dataSets.find((d) => d.IsAutoCreated === false && d.Name && !(d.Name as string).startsWith("_") && !(d.Name as string).includes("Process"));
     if (!template) template = dataSets[0];
     if (!template) throw new Error("テンプレに使える既存テーブルがありません。templateTableName で明示指定してください");
   }
   const templateName = template.Name as string;
+  const templateRef = template;
+  const componentId = generateComponentId();
 
-  // テンプレからデータソース接続情報をコピー
-  const newDataSet: Record<string, unknown> = {
-    ExprLookup: {},
-    Name: args.newTableName,
-    SchemaName: "auto",
-    PriorSchemaName: null,
-    AllowedUpdates: 0,
-    UpdateMode: 7,
-    HideExistingRows: false,
-    UpdateModeExpression: null,
-    DataFilter: null,
-    DataFilterEvaluatable: null,
-    LocaleName: template.LocaleName ?? "ja-JP",
-    DataAccessMode: template.DataAccessMode ?? "as app creator",
-    IsShared: template.IsShared ?? true,
-    DataSourceName: template.DataSourceName,
-    ProviderName: template.ProviderName,
-    Source: template.Source,
-    SourcePath: template.SourcePath,
-    SourceQualifier: args.sourceQualifier,
-    SourceQualifierId: args.sourceQualifierId ?? null,
-    SourceType: template.SourceType ?? "TABLE",
-    ColumnOrder: ["_RowNumber"],
-    EnablePartitioning: false,
-    SourcePartitionDefinition: { Expression: null, Partitions: [], DefaultValue: null },
-    EnableWorksheetPartitioning: false,
-    WorksheetPartitionDefinition: { Expression: null, Partitions: [], DefaultValue: null },
-    CloudObjectStore: template.CloudObjectStore ?? "_Default",
-    IsAutoCreated: false,
-    ServerCachingInterval: template.ServerCachingInterval ?? "FIVE_MINUTE",
-    NeedsSchemaRegen: true,
-    ProviderSpecificSchema: null,
-    CreatedBy: null,
-    AutomationPurpose: 0,
-    DocumentCache: null,
-    DocumentRefreshRegion: "",
-    Comment: null,
-    IsValid: true,
-    Visibility: "ALWAYS",
-    DisableAutoUpdate: false,
-    ComponentId: generateComponentId(),
-    _isNew: true,
-    _version: 1,
-    _index: dataSets.length,
-    _path: `AppData.DataSets[${dataSets.length}]`,
+  const applyFn = (a: AppDef) => {
+    const ad = (a as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+    if (!ad) throw new Error("AppData が見つかりません（リトライ時）");
+    if (!ad.DataSets) ad.DataSets = [];
+    const list = ad.DataSets as Array<Record<string, unknown>>;
+    if (list.find((d) => d.Name === args.newTableName)) return;
+    const idx = list.length;
+    list.push({
+      ExprLookup: {},
+      Name: args.newTableName,
+      SchemaName: "auto",
+      PriorSchemaName: null,
+      AllowedUpdates: 0,
+      UpdateMode: 7,
+      HideExistingRows: false,
+      UpdateModeExpression: null,
+      DataFilter: null,
+      DataFilterEvaluatable: null,
+      LocaleName: templateRef.LocaleName ?? "ja-JP",
+      DataAccessMode: templateRef.DataAccessMode ?? "as app creator",
+      IsShared: templateRef.IsShared ?? true,
+      DataSourceName: templateRef.DataSourceName,
+      ProviderName: templateRef.ProviderName,
+      Source: templateRef.Source,
+      SourcePath: templateRef.SourcePath,
+      SourceQualifier: args.sourceQualifier,
+      SourceQualifierId: args.sourceQualifierId ?? null,
+      SourceType: templateRef.SourceType ?? "TABLE",
+      ColumnOrder: ["_RowNumber"],
+      EnablePartitioning: false,
+      SourcePartitionDefinition: { Expression: null, Partitions: [], DefaultValue: null },
+      EnableWorksheetPartitioning: false,
+      WorksheetPartitionDefinition: { Expression: null, Partitions: [], DefaultValue: null },
+      CloudObjectStore: templateRef.CloudObjectStore ?? "_Default",
+      IsAutoCreated: false,
+      ServerCachingInterval: templateRef.ServerCachingInterval ?? "FIVE_MINUTE",
+      NeedsSchemaRegen: true,
+      ProviderSpecificSchema: null,
+      CreatedBy: null,
+      AutomationPurpose: 0,
+      DocumentCache: null,
+      DocumentRefreshRegion: "",
+      Comment: null,
+      IsValid: true,
+      Visibility: "ALWAYS",
+      DisableAutoUpdate: false,
+      ComponentId: componentId,
+      _isNew: true,
+      _version: 1,
+      _index: idx,
+      _path: `AppData.DataSets[${idx}]`,
+    });
   };
-
-  if (!appData.DataSets) appData.DataSets = [];
-  (appData.DataSets as Array<Record<string, unknown>>).push(newDataSet);
+  applyFn(app);
 
   const warning = `Schema/Initial View/Default Actions は AppSheet 側で自動生成（SchemaName: "auto", NeedsSchemaRegen: true）。SourceQualifier '${args.sourceQualifier}' がデータソース上に実在しないと saveapp は失敗します。`;
 
@@ -1645,11 +1722,34 @@ export async function createTable(args: {
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed: firstRefreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+
+  // #4 対応: saveapp 直後は AppSheet 側でスキーマ再生成中の可能性があるため、
+  // 最大 5 回まで再 fetchLoadApp して Schema が現れるまで待機する。
+  const maxSchemaWait = 5;
+  let schemaReady = false;
+  let refreshed = firstRefreshed;
+  for (let attempt = 0; attempt < maxSchemaWait; attempt++) {
+    const schemas = (refreshed as AppDef).AppData?.DataSchemas ?? [];
+    const sch = schemas.find(
+      (s) => s.AutoSchemaFrom === args.newTableName || s.Name === `${args.newTableName}_Schema` || s.Name === args.newTableName,
+    );
+    if (sch && Array.isArray(sch.Attributes) && sch.Attributes.length > 0) {
+      schemaReady = true;
+      break;
+    }
+    if (attempt < maxSchemaWait - 1) {
+      const wait = 1500 + 1000 * attempt; // 1.5s, 2.5s, 3.5s, 4.5s
+      log.info("waiting for schema regen", { table: args.newTableName, attempt: attempt + 1, waitMs: wait });
+      await new Promise((r) => setTimeout(r, wait));
+      refreshed = (await fetchLoadApp(appName)).app;
+    }
+  }
+
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
   const refreshedDS = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined;
   const created = refreshedDS?.find((d) => d.Name === args.newTableName);
-  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
 
   return {
     dryRun: false,
@@ -1657,9 +1757,12 @@ export async function createTable(args: {
     newTableName: args.newTableName,
     templateTableName: templateName,
     componentId: created?.ComponentId as string | undefined,
+    schemaReady,
     warning,
     message: created
-      ? `✅ テーブル '${args.newTableName}' 作成完了。Schema/View/Default Actions は AppSheet 側で自動生成された。`
+      ? schemaReady
+        ? `✅ テーブル '${args.newTableName}' 作成完了。Schema 自動生成も確認済み。`
+        : `⚠️ テーブル '${args.newTableName}' は登録されたが Schema 自動生成が ${maxSchemaWait} 回待機しても完了せず。手動で refresh_app_def を呼ぶか時間を置いて再確認してください。`
       : `⚠️ saveapp Success だが事後検証でテーブル不在。SourceQualifier がデータソース上に実在しない可能性。`,
   };
 }
@@ -1897,7 +2000,13 @@ export async function createView(args: {
   viewName: string;
   tableName: string;
   viewType: ViewType;
-  position?: "primary" | "menu" | "ref" | "none";
+  // Position 値の Editor UI マッピング:
+  //   first / next / middle / later / last  → PRIMARY NAVIGATION (画面下タブ・左から順)
+  //   menu                                  → MENU NAVIGATION (左メニュー)
+  //   ref                                   → REFERENCE VIEWS (参照のみ・ナビ非表示)
+  //   none                                  → 隠し View
+  // 後方互換: primary は first にマップ（loadApp 観察では Editor が primary を SYSTEM GENERATED 扱いするため）
+  position?: "first" | "next" | "middle" | "later" | "last" | "menu" | "ref" | "none" | "primary";
   showIf?: string;
   icon?: string;
   menuOrder?: number;
@@ -1932,7 +2041,9 @@ export async function createView(args: {
     throw new Error(`テーブル/Slice '${args.tableName}' が見つかりません`);
   }
 
-  const position = args.position ?? "menu";
+  // primary は新 Editor UI で SYSTEM GENERATED 扱いされるため first にマップ
+  const positionRaw = args.position ?? "menu";
+  const position = positionRaw === "primary" ? "first" : positionRaw;
   const icon = args.icon ?? "fa-list-ul";
   const menuOrder = args.menuOrder ?? 1;
   const showIf = args.showIf ? normalizeFormula(args.showIf) : null;
@@ -1943,36 +2054,43 @@ export async function createView(args: {
   const settings = JSON.stringify(viewDefinition);
   const componentId = generateComponentId();
 
-  const newView: Record<string, unknown> = {
-    ExprLookup: {},
-    Name: args.viewName,
-    DisplayName: null,
-    ShowIf: showIf,
-    TableOrFolderName: args.tableName,
-    Action: args.viewType,
-    Position: position,
-    Description: null,
-    ActionType: null,
-    Parameters: [],
-    Settings: settings,
-    ViewDefinition: viewDefinition,
-    CreatedBy: "User",
-    Comment: null,
-    IsValid: true,
-    Visibility: "ALWAYS",
-    DisableAutoUpdate: false,
-    ComponentId: componentId,
-    _isCopy: false,
-    _isNew: true,
-    _version: VIEW_VERSION[args.viewType] ?? 2,
-    _index: controls.length,
-    _path: `Presentation.Controls[${controls.length}]`,
-    _isSystemGenerated: false,
-    _isMinor: false,
+  const applyFn = (a: AppDef) => {
+    const pres = (a as Record<string, unknown>).Presentation as Record<string, unknown> | undefined;
+    if (!pres) throw new Error("Presentation が見つかりません（リトライ時）");
+    const ctrls = (pres.Controls as Array<Record<string, unknown>> | undefined) ?? [];
+    if (ctrls.find((v) => v.Name === args.viewName)) return; // 既に追加済み
+    const idx = ctrls.length;
+    const newView: Record<string, unknown> = {
+      ExprLookup: {},
+      Name: args.viewName,
+      DisplayName: null,
+      ShowIf: showIf,
+      TableOrFolderName: args.tableName,
+      Action: args.viewType,
+      Position: position,
+      Description: null,
+      ActionType: null,
+      Parameters: [],
+      Settings: settings,
+      ViewDefinition: viewDefinition,
+      CreatedBy: "User",
+      Comment: null,
+      IsValid: true,
+      Visibility: "ALWAYS",
+      DisableAutoUpdate: false,
+      ComponentId: componentId,
+      _isCopy: false,
+      _isNew: true,
+      _version: VIEW_VERSION[args.viewType] ?? 2,
+      _index: idx,
+      _path: `Presentation.Controls[${idx}]`,
+      _isSystemGenerated: false,
+      _isMinor: false,
+    };
+    if (!pres.Controls) pres.Controls = [];
+    (pres.Controls as Array<Record<string, unknown>>).push(newView);
   };
-
-  if (!presentation.Controls) presentation.Controls = [];
-  (presentation.Controls as Array<Record<string, unknown>>).push(newView);
+  applyFn(app);
 
   if (!args.apply) {
     return {
@@ -1985,8 +2103,7 @@ export async function createView(args: {
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedControls = ((refreshed as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
   const created = refreshedControls?.find((v) => v.Name === args.viewName);
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -2255,33 +2372,41 @@ export async function addSlice(args: {
   const actions = args.actions ?? ["**auto**"];
   const filterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : null;
 
-  const newSlice: Record<string, unknown> = {
-    ExprLookup: {},
-    Name: args.sliceName,
-    SourceTable: args.sourceTable,
-    SourceColumn: null,
-    RowFilterCondition: null,
-    RowFilterParameter: null,
-    Columns: columns,
-    Actions: actions,
-    FilterExpression: { Description: { Content: "" } },
-    FilterCondition: filterCondition,
-    FilterEvaluatable: null,
-    AllowedUpdates: 0,
-    UpdateMode: 7,
-    Comment: null,
-    IsValid: true,
-    Visibility: "ALWAYS",
-    DisableAutoUpdate: false,
-    ComponentId: generateComponentId(),
-    _isNew: true,
-    _version: 6,
-    _index: slices.length,
-    _path: `AppData.TableSlices[${slices.length}]`,
+  const componentId = generateComponentId();
+  const cols = columns;
+  const applyFn = (a: AppDef) => {
+    const ad = (a as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+    if (!ad) throw new Error("AppData が見つかりません（リトライ時）");
+    if (!ad.TableSlices) ad.TableSlices = [];
+    const list = ad.TableSlices as Array<Record<string, unknown>>;
+    if (list.find((s) => s.Name === args.sliceName)) return;
+    const idx = list.length;
+    list.push({
+      ExprLookup: {},
+      Name: args.sliceName,
+      SourceTable: args.sourceTable,
+      SourceColumn: null,
+      RowFilterCondition: null,
+      RowFilterParameter: null,
+      Columns: cols,
+      Actions: actions,
+      FilterExpression: { Description: { Content: "" } },
+      FilterCondition: filterCondition,
+      FilterEvaluatable: null,
+      AllowedUpdates: 0,
+      UpdateMode: 7,
+      Comment: null,
+      IsValid: true,
+      Visibility: "ALWAYS",
+      DisableAutoUpdate: false,
+      ComponentId: componentId,
+      _isNew: true,
+      _version: 6,
+      _index: idx,
+      _path: `AppData.TableSlices[${idx}]`,
+    });
   };
-
-  if (!appData.TableSlices) appData.TableSlices = [];
-  (appData.TableSlices as Array<Record<string, unknown>>).push(newSlice);
+  applyFn(app);
 
   if (!args.apply) {
     return {
@@ -2289,12 +2414,11 @@ export async function addSlice(args: {
       applied: false,
       sliceName: args.sliceName,
       sourceTable: args.sourceTable,
-      message: `dry-run。Slice '${args.sliceName}' (source: '${args.sourceTable}', columns: ${columns.length} 件) を構築。apply: true で送信。`,
+      message: `dry-run。Slice '${args.sliceName}' (source: '${args.sourceTable}', columns: ${cols.length} 件) を構築。apply: true で送信。`,
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedSlices = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.TableSlices as Array<Record<string, unknown>> | undefined;
   const created = refreshedSlices?.find((s) => s.Name === args.sliceName);
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -2359,8 +2483,16 @@ export async function createBot(args: {
   botName: string;
   tableName: string;
   actionName: string;
-  eventType?: "ADDS_ONLY" | "UPDATES_ONLY" | "DELETES_ONLY" | "ADDS_AND_UPDATES" | "ADDS_UPDATES_DELETES";
+  // Data Change 系 (デフォルト) または "Scheduled" を指定可能
+  eventType?: "ADDS_ONLY" | "UPDATES_ONLY" | "DELETES_ONLY" | "ADDS_AND_UPDATES" | "ADDS_UPDATES_DELETES" | "Scheduled";
   filterCondition?: string;
+  // Schedule トリガーの場合のみ指定（eventType: "Scheduled"）
+  scheduleConfig?: {
+    cron: string;             // 5 フィールド cron 形式。例: "0 12 1 * *" (月初 12:00)
+    timeZone?: string;        // Windows タイムゾーン形式。例: "Tokyo Standard Time" / "Pacific Standard Time" / "UTC"
+    forEachRowInTable?: boolean; // 各行に対して実行するか。デフォルト true
+    region?: string;          // 通常 "" のまま
+  };
   disabled?: boolean;
   apply?: boolean;
 }): Promise<{
@@ -2417,7 +2549,14 @@ export async function createBot(args: {
   }
 
   const eventType = args.eventType ?? "ADDS_AND_UPDATES";
-  const filterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : "=TRUE";
+  const isSchedule = eventType === "Scheduled";
+
+  if (isSchedule && !args.scheduleConfig) {
+    throw new Error("eventType: 'Scheduled' の場合は scheduleConfig.cron が必須");
+  }
+  if (isSchedule && !args.scheduleConfig?.cron) {
+    throw new Error("scheduleConfig.cron が必須。例: '0 12 1 * *' (月初 12:00)");
+  }
 
   // Step Action ノードの ComponentId
   const stepNodeComponentId = generateComponentId();
@@ -2426,11 +2565,31 @@ export async function createBot(args: {
   const processComponentId = generateComponentId();
   const botComponentId = generateComponentId();
 
-  const newEvent = {
-    ExprLookup: {},
-    Name: eventName,
-    EventType: "Change",
-    AppEventDefinition: {
+  // Event 構造を eventType によって切替
+  let appEventDefinition: Record<string, unknown>;
+  let outerEventType: string;
+  let outerFilterCondition: string | null;
+  if (isSchedule) {
+    const cfg = args.scheduleConfig!;
+    appEventDefinition = {
+      $type: "Jeenee.DataTypes.AppScheduledEventDefinition, Jeenee.DataTypes",
+      ExprLookup: {},
+      RecurrentRuleName: null,
+      Schedule: cfg.cron,
+      TimeZone: cfg.timeZone ?? "Tokyo Standard Time",
+      Table: args.tableName,
+      FilterCondition: args.filterCondition ?? "true",
+      ForEachRowInTable: cfg.forEachRowInTable ?? true,
+      Region: cfg.region ?? "",
+      IsValid: true,
+      Visibility: "ALWAYS",
+      DisableAutoUpdate: false,
+      ComponentId: eventDefComponentId,
+    };
+    outerEventType = "Scheduled";
+    outerFilterCondition = null; // Scheduled の場合 outer FilterCondition は null（AppEventDefinition.FilterCondition 側で持つ）
+  } else {
+    appEventDefinition = {
       $type: "Jeenee.DataTypes.AppChangeEventDefinition, Jeenee.DataTypes",
       ExprLookup: {},
       ChangeEvent: eventType,
@@ -2439,8 +2598,17 @@ export async function createBot(args: {
       Visibility: "ALWAYS",
       DisableAutoUpdate: false,
       ComponentId: eventDefComponentId,
-    },
-    FilterCondition: filterCondition,
+    };
+    outerEventType = "Change";
+    outerFilterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : "=TRUE";
+  }
+
+  const newEvent = {
+    ExprLookup: {},
+    Name: eventName,
+    EventType: outerEventType,
+    AppEventDefinition: appEventDefinition,
+    FilterCondition: outerFilterCondition,
     Disabled: false,
     CreatedBy: null,
     AutomationPurpose: 0,
@@ -2457,7 +2625,7 @@ export async function createBot(args: {
     DisableAutoUpdate: false,
     ComponentId: eventComponentId,
     _isNew: true,
-    _version: 6,
+    _version: isSchedule ? 7 : 6,
     _index: events.length,
     _path: `Behavior.AppEvents[${events.length}]`,
   };
@@ -2527,13 +2695,25 @@ export async function createBot(args: {
     _path: `Behavior.AppBots[${bots.length}]`,
   };
 
-  // 4 配列に追加（Tasks には追加しない）
-  if (!behavior.AppBots) behavior.AppBots = [];
-  if (!behavior.AppEvents) behavior.AppEvents = [];
-  if (!behavior.AppProcesses) behavior.AppProcesses = [];
-  (behavior.AppBots as Array<Record<string, unknown>>).push(newBot);
-  (behavior.AppEvents as Array<Record<string, unknown>>).push(newEvent);
-  (behavior.AppProcesses as Array<Record<string, unknown>>).push(newProcess);
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    if (!beh.AppBots) beh.AppBots = [];
+    if (!beh.AppEvents) beh.AppEvents = [];
+    if (!beh.AppProcesses) beh.AppProcesses = [];
+    const bb = beh.AppBots as Array<Record<string, unknown>>;
+    const ee = beh.AppEvents as Array<Record<string, unknown>>;
+    const pp = beh.AppProcesses as Array<Record<string, unknown>>;
+    if (bb.find((b) => b.Name === args.botName)) return; // 既に追加済み
+    // _index / _path を新しい配列長で更新して push
+    const bIdx = bb.length;
+    const eIdx = ee.length;
+    const pIdx = pp.length;
+    bb.push({ ...newBot, _index: bIdx, _path: `Behavior.AppBots[${bIdx}]` });
+    ee.push({ ...newEvent, _index: eIdx, _path: `Behavior.AppEvents[${eIdx}]` });
+    pp.push({ ...newProcess, _index: pIdx, _path: `Behavior.AppProcesses[${pIdx}]` });
+  };
+  applyFn(app);
 
   const warning =
     "Process State Table が AppSheet 側で自動生成されない場合は手動でテーブル作成が必要かも。saveapp 後に必ず Manage→Monitor で動作確認すること。";
@@ -2550,8 +2730,7 @@ export async function createBot(args: {
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedBots = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppBots as Array<Record<string, unknown>> | undefined;
   const created = refreshedBots?.find((b) => b.Name === args.botName);
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -2642,39 +2821,46 @@ export async function addOpenUrlAction(args: {
     BulkApplicable: false,
   };
 
-  const newAction: Record<string, unknown> = {
-    Value: url,
-    ValueEvaluatable: null,
-    ConditionEvaluatable: null,
-    ActionType: "NAVIGATE_URL",
-    ActionSettings: JSON.stringify(actionSettings),
-    IsEmbedded: false,
-    Scope: "UNSET",
-    Inputs: [],
-    Name: args.actionName,
-    DisplayName: null,
-    CreatedBy: "User",
-    Icon: icon,
-    IconRunnerUps: null,
-    Table: args.tableName,
-    TableScope: false,
-    Condition: cond,
-    ColumnToEdit: null,
-    ColumnAttachment: null,
-    ActionOrder: actions.length,
-    ActionDefinition: actionDefinition,
-    Comment: null,
-    IsValid: true,
-    Visibility: "ALWAYS",
-    DisableAutoUpdate: false,
-    ComponentId: generateComponentId(),
-    ExprLookup: {},
-    _isNew: true,
-    _version: 0,
-    _index: actions.length,
-    _path: `AppData.DataActions[${actions.length}]`,
+  const componentId = generateComponentId();
+  const applyFn = (a: AppDef) => {
+    const targetActions = ((a as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
+    if (!targetActions) throw new Error("AppData.DataActions が見つかりません（リトライ時）");
+    if (targetActions.find((x) => x.Name === args.actionName)) return; // 既に追加済み
+    const idx = targetActions.length;
+    targetActions.push({
+      Value: url,
+      ValueEvaluatable: null,
+      ConditionEvaluatable: null,
+      ActionType: "NAVIGATE_URL",
+      ActionSettings: JSON.stringify(actionSettings),
+      IsEmbedded: false,
+      Scope: "UNSET",
+      Inputs: [],
+      Name: args.actionName,
+      DisplayName: null,
+      CreatedBy: "User",
+      Icon: icon,
+      IconRunnerUps: null,
+      Table: args.tableName,
+      TableScope: false,
+      Condition: cond,
+      ColumnToEdit: null,
+      ColumnAttachment: null,
+      ActionOrder: idx,
+      ActionDefinition: actionDefinition,
+      Comment: null,
+      IsValid: true,
+      Visibility: "ALWAYS",
+      DisableAutoUpdate: false,
+      ComponentId: componentId,
+      ExprLookup: {},
+      _isNew: true,
+      _version: 0,
+      _index: idx,
+      _path: `AppData.DataActions[${idx}]`,
+    });
   };
-  actions.push(newAction);
+  applyFn(app);
 
   if (!args.apply) {
     return {
@@ -2687,8 +2873,7 @@ export async function addOpenUrlAction(args: {
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedActions = ((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataActions as Array<Record<string, unknown>> | undefined;
   const created = refreshedActions?.find((a) => a.Name === args.actionName);
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -2785,8 +2970,13 @@ export async function promoteToRef(args: {
     Suggested_Values: parsedBeforeAux.Suggested_Values ?? null,
   };
 
-  attr.Type = "Ref";
-  attr.TypeAuxData = JSON.stringify(newAux);
+  const auxJson = JSON.stringify(newAux);
+  const applyFn = (a: AppDef) => {
+    const target = findAttribute(a, args.tableName, args.columnName);
+    target.Type = "Ref";
+    target.TypeAuxData = auxJson;
+  };
+  applyFn(app);
 
   // 既存値の互換性をざっくり警告
   let warning: string | undefined;
@@ -2811,8 +3001,7 @@ export async function promoteToRef(args: {
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
   const after = { Type: (refreshedAttr.Type ?? "Unknown") as string, TypeAuxData: refreshedAttr.TypeAuxData };
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
@@ -2919,8 +3108,14 @@ export async function setSecurityFilter(args: {
   const trimmed = args.filter.trim();
   const newFilter: string | null = trimmed === "" ? null : normalizeFormula(trimmed);
 
-  ds.DataFilter = newFilter;
-  ds.DataFilterEvaluatable = null;
+  const applyFn = (a: AppDef) => {
+    const ds2 = ((a as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined;
+    const target = ds2?.find((d) => d.Name === args.tableName);
+    if (!target) throw new Error(`テーブル '${args.tableName}' が見つかりません（リトライ時）`);
+    target.DataFilter = newFilter;
+    target.DataFilterEvaluatable = null;
+  };
+  applyFn(app);
 
   if (before === newFilter) {
     return {
@@ -2945,8 +3140,7 @@ export async function setSecurityFilter(args: {
     };
   }
 
-  const result = await postSaveApp(credential.appId, appName, app);
-  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
   const refreshedDs = (((refreshed as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined)?.find((d) => d.Name === args.tableName);
   const after = (refreshedDs?.DataFilter ?? extractEvalSource(refreshedDs?.DataFilterEvaluatable as Evaluatable | null | undefined)) as string | null;
   await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");

@@ -557,14 +557,46 @@ AppBots[]       Bot 本体（名前・有効/無効・EventName・ProcessName）
 
 実装メモ: [src/tools/edit.ts](../src/tools/edit.ts) の `appsheet_clone_bot`, `appsheet_remove_bot` がこの 4 配列同時操作を行う。
 
-**Bot Event の種別**：
+**Bot Event の種別**（`Event.EventType` の値）：
 
-| 種別 | トリガー |
-|------|----------|
-| `DataChange` (`Adds`, `Updates`, `Deletes`) | テーブルの行変更 |
-| `Schedule` | 時刻スケジュール（毎日・毎週・cron 風） |
-| `Webhook` | 外部からの POST 受信 |
-| `ScheduledReport` | 定期レポート送信 |
+| 種別 | $type | トリガー |
+|------|-------|----------|
+| `Change` | `AppChangeEventDefinition` | テーブルの行変更（ADDS_ONLY / UPDATES_ONLY / DELETES_ONLY / ADDS_AND_UPDATES / ADDS_UPDATES_DELETES） |
+| `Scheduled` | `AppScheduledEventDefinition` | 時刻スケジュール（5 フィールド cron） |
+| `Webhook` | `AppWebhookEventDefinition` | 外部からの POST 受信 |
+| `ScheduledReport` | `AppScheduledReportEventDefinition` | 定期レポート送信 |
+
+**`Scheduled` Event の必須フィールド**（loadApp HAR 由来・Issue #6）:
+
+```
+EventType: "Scheduled"
+AppEventDefinition: {
+  $type: "Jeenee.DataTypes.AppScheduledEventDefinition, Jeenee.DataTypes",
+  Schedule: "0 12 1 * *",      // 5 フィールド cron。"分 時 日 月 曜日"
+  TimeZone: "Tokyo Standard Time",  // ★ Windows 形式（IANA 形式 Asia/Tokyo ではない）
+  Table: "<対象テーブル名>",
+  FilterCondition: "true",       // 小文字 true がデフォルト
+  ForEachRowInTable: true,       // 各行に対して実行するか
+  Region: "",
+}
+```
+
+**主な Windows TimeZone 値**:
+
+- `"Tokyo Standard Time"` — JST (UTC+9)
+- `"Pacific Standard Time"` — PST (UTC-8)
+- `"Eastern Standard Time"` — EST (UTC-5)
+- `"UTC"` — 協定世界時
+
+**cron 例**:
+
+| パターン | cron | 用途 |
+|---------|------|------|
+| 毎日 12:00 | `0 12 * * *` | 日次レポート |
+| 毎週月曜 9:00 | `0 9 * * 1` | 週次集計 |
+| 毎月 1 日 12:00 | `0 12 1 * *` | 月次バッチ |
+| 平日 18:00 | `0 18 * * 1-5` | 業務日終了通知 |
+| 毎時 0 分 | `0 * * * *` | 毎時集計 |
 
 **Task の種別** (`Task.TaskType` で識別)：
 
@@ -616,7 +648,7 @@ AppBots[]       Bot 本体（名前・有効/無効・EventName・ProcessName）
 | `TableOrFolderName` | 対象テーブル / Slice |
 | `Action` | **View タイプ**（`"table"` / `"card"` / `"detail"` 等の小文字文字列） |
 | `ActionType` | 通常 `null`（Action 系のフィールド名と紛らわしいが、View では未使用） |
-| `Position` | 表示位置（`primary` / `menu` / `ref` / `none`） |
+| `Position` | 表示位置（`first` / `next` / `middle` / `later` / `last` / `menu` / `ref` / `none`）。詳細 §6.5 |
 | `ShowIf` | 表示条件式（USEREMAIL() で出し分け等） |
 | `Settings` | View タイプ固有設定の **JSON 文字列**（`$type` 含む） |
 | `ViewDefinition` | Settings と同じ内容を**オブジェクトで保持**（送信時は両方更新） |
@@ -681,6 +713,36 @@ AppBots[]       Bot 本体（名前・有効/無効・EventName・ProcessName）
 | `Settings` | 色・アイコン・太字等の表示設定（オブジェクト） |
 | `RuleOrder` | 評価順序（数値） |
 | `Disabled` | 無効化フラグ |
+
+### 6.5 Position 値と View Editor のグルーピング
+
+実 loadApp の観察で判明した重要事項（**Issue #3 由来**）：
+
+| Position 値 | Editor 表示グループ |
+|------------|-------------------|
+| `first` / `next` / `middle` / `later` / `last` | **PRIMARY NAVIGATION**（画面下タブ・左から順） |
+| `menu` | **MENU NAVIGATION**（左メニュー・ドロワー） |
+| `ref` | **REFERENCE VIEWS**（参照のみ・ナビ非表示） |
+| `none` | 隠し View |
+| ⚠ `primary` | **SYSTEM GENERATED 扱い**（新 Editor）。`first` を使うこと |
+
+**ハマり所**:
+
+`Position: "primary"` は古い AppSheet のドキュメントに登場するが、新 Editor では **SYSTEM GENERATED に分類**されてしまう。`appsheet_create_view` ツールでは `primary` を受け取った場合、内部で自動的に `first` に変換する（後方互換）。
+
+### 6.6 ComponentId のフォーマット
+
+すべてのエンティティ（View / Action / Bot / Slice / Schema 列等）の `ComponentId` は以下の固定フォーマット（**Issue #3 由来**）：
+
+```
+K + 26 文字（A-Z + 2-7 の Crockford base32 風文字集合）= 27 文字
+```
+
+**観測**:
+- `App owner` 手動作成・`System` 自動生成 ともに **`K` 始まり 27 文字**
+- ランダム先頭 / 26 文字長で生成すると Editor が SYSTEM GENERATED に分類してしまうため、**`K` プレフィックス必須**
+
+MCP の `generateComponentId()` ヘルパは Phase 6 から `K` + 26 文字 = 27 文字を生成する。
 
 ---
 
@@ -883,10 +945,31 @@ DataSet.DataFilter = "[担当者メール] = USEREMAIL()"
 
 `appsheet_find_records` (公式 API) には以下の制限：
 
-- **`Selector` パラメータが事実上必須**: 全件取得には `Filter([テーブル名], TRUE)` 等の式を渡す
+- **`Selector` は `Filter("table", expr)` 形式が必須**（boolean 式単体は受け付けない）。詳細は次の §9.5.1
 - **戻り値件数の上限**（テーブルあたり数千行が目安）
 - **スプシソースでは反映が遅い**（数秒〜数十秒）
 - **Image/File 列は URL のみ返却**（バイナリは別 API）
+
+#### 9.5.1 Selector の書式（重要・ハマり所）
+
+AppSheet API v2 の Selector は **boolean 式単体だとエラーが出ず 0 件返却**（デバッグ困難）。`Filter("table", expr)` または `Select(table[col], cond)` でラップする必要がある：
+
+```
+❌ NG（0 件返却・エラーなし）
+selector: 'TRUE'
+selector: '[ステータス] = "未処理"'
+selector: 'AND([記録日時] >= TODAY(), [記録日時] < TODAY()+1)'
+
+✅ OK
+selector: 'Filter("記事管理", TRUE)'                          // 全件
+selector: 'Filter("記事管理", [ステータス] = "未処理")'        // 条件付き
+selector: 'Select(記事管理[ID], [ステータス] = "公開済み")'    // 列のみ抽出
+selector: ''                                                  // 空文字も全件
+```
+
+許容されるリスト関数: `Filter` / `Select` / `TopN` / `OrderBy` / `Sort` / `REF_ROWS` / `List` 等。
+
+**MCP の自動ラップ** (Phase 6 から): `appsheet_find_records` は `selector` が boolean 式単体の場合、**自動的に `Filter("table", ...)` でラップ**する。後方互換のため、既に `Filter(...)` 等のリスト関数で始まる selector は素通しする。これで boolean 式直書きでも動作する。
 
 ### 9.6 saveapp の同時編集競合
 
