@@ -3281,16 +3281,34 @@ export async function setViewDisplayMode(args: {
 }
 
 // View Options camelCase → ViewDefinition PascalCase field 名 マッピング
-// create_view の buildViewDefinition と語彙を揃える
+// create_view の buildViewDefinition と語彙を揃える。
+// 公式ドキュメント (support.google.com/appsheet) ベースの推測値含む。
+// 動作しない場合は HAR / appdef snapshot で実際の field 名を確認して修正。
 const VIEW_OPTION_FIELD_MAP: Record<string, string> = {
-  // common
+  // ===== 共通 =====
   icon: "Icon",
   menuOrder: "MenuOrder",
-  // table
+  groupBy: "GroupBy",
+  sortBy: "SortBy",
+  primarySortColumn: "PrimarySortColumn",
+  isPrimarySortDescending: "IsPrimarySortDescending",
+  groupAggregate: "GroupAggregate",  // table/deck/card/gallery 共通
+  events: "Events",                   // Behavior > Event actions (構造化配列)
+  eventActions: "EventActions",       // ※ events と同義の可能性あり (要検証)
+  attachedCards: "AttachedCards",     // detail 下部の関連ビュー (要検証)
+  slug: "Slug",                       // URL 識別子 (要検証)
+  badge: "Badge",                     // バッジ式 (要検証)
+  customStyle: "CustomStyle",         // カスタム CSS (要検証)
+
+  // ===== table =====
   columnWidth: "ColumnWidth",
   enableQuickEdit: "EnableQuickEdit",
   columnOrder: "ColumnOrder",
-  // card / deck
+  showColumnHeaders: "ShowColumnHeaders",     // 列見出し表示
+  numericAlignment: "NumericAlignment",       // 数値の右寄せ等
+  columnHeaderStyle: "ColumnHeaderStyle",     // sticky / normal
+
+  // ===== card / deck =====
   layout: "Layout",
   mainDeckImageColumn: "MainDeckImageColumn",
   imageShape: "ImageShape",
@@ -3299,7 +3317,18 @@ const VIEW_OPTION_FIELD_MAP: Record<string, string> = {
   deckSummaryColumn: "DeckSummaryColumn",
   deckNestedTableColumn: "DeckNestedTableColumn",
   showActionBar: "ShowActionBar",
-  // detail
+  imageFit: "ImageFit",                       // Cover / Fit / Fill
+  actionDisplay: "ActionDisplay",             // inline / menu
+
+  // ===== card 専用 =====
+  cardTitleColumn: "CardTitleColumn",
+  cardSubtitleColumn: "CardSubtitleColumn",
+  cardHeaderColumn: "CardHeaderColumn",       // Large layout
+  cardSubheaderColumn: "CardSubheaderColumn", // Large layout
+  cardDescriptionColumn: "CardDescriptionColumn", // Large layout
+  thumbnailColumn: "ThumbnailColumn",         // List layout
+
+  // ===== detail =====
   mainSlideshowImageColumn: "MainSlideshowImageColumn",
   detailContentColumn: "DetailContentColumn",
   headerColumns: "HeaderColumns",
@@ -3311,7 +3340,10 @@ const VIEW_OPTION_FIELD_MAP: Record<string, string> = {
   slideshowMode: "SlideshowMode",
   desktopSplitMode: "DesktopSplitMode",
   useDesktopMultiColumn: "UseDesktopMultiColumn",
-  // form
+  includeShowColumns: "IncludeShowColumns",   // Page_Header/Section_Header 表示切替
+  defaultDetailStyle: "DefaultDetailStyle",   // Normal/Centered/No Headings/Side-by-side
+
+  // ===== form =====
   autoSave: "AutoSave",
   autoReopen: "AutoReopen",
   finishView: "FinishView",
@@ -3320,11 +3352,18 @@ const VIEW_OPTION_FIELD_MAP: Record<string, string> = {
   pageStyle: "PageStyle",
   formFooterStyle: "FormFooterStyle",
   audioInput: "AudioInput",
-  // dashboard
+  saveCancelPosition: "SaveCancelPosition",   // Top / Bottom
+  hideNumbering: "HideNumbering",             // ページ番号非表示
+  autoAdvanceFields: "AutoAdvanceFields",     // Enum 選択後自動次へ
+  tabsLabels: "TabsLabels",                   // Tabs スタイル時のタブ名
+
+  // ===== dashboard =====
   viewEntries: "ViewEntries",
   interactiveMode: "InteractiveMode",
   showTabs: "ShowTabs",
-  // calendar
+  overlayActions: "OverlayActions",           // ビュー単位 overlay (要検証)
+
+  // ===== calendar =====
   startDateColumn: "StartDateColumn",
   startTimeColumn: "StartTimeColumn",
   endDateColumn: "EndDateColumn",
@@ -3332,35 +3371,46 @@ const VIEW_OPTION_FIELD_MAP: Record<string, string> = {
   labelColumn: "LabelColumn",
   categoryColumn: "CategoryColumn",
   defaultCalendarView: "DefaultCalendarView",
-  // map
+  descriptionColumn: "DescriptionColumn",     // イベント説明列 (labelColumn と別)
+  allDayEvents: "AllDayEvents",               // 終日イベント
+  timeFormat: "TimeFormat",                   // 12h / 24h
+
+  // ===== map =====
   mapType: "MapType",
   mapColumn: "MapColumn",
   locationMode: "LocationMode",
   secondaryTable: "SecondaryTable",
   secondaryColumn: "SecondaryColumn",
   minimumClusterSize: "MinimumClusterSize",
-  // chart
+  hidePointsOfInterest: "HidePointsOfInterest", // POI 非表示
+  mapPinLimit: "MapPinLimit",                   // 表示上限
+  kmlLayer: "KmlLayer",                         // 地理レイヤー追加
+  backgroundImage: "BackgroundImage",           // カスタムマップ画像
+
+  // ===== chart =====
   chartType: "ChartType",
   useNewChartExperience: "UseNewChartExperience",
   chartConfig: "ChartConfig",
   chartColumns: "ChartColumns",
-  groupAggregate: "GroupAggregate",
   trendLine: "TrendLine",
   chartColors: "ChartColors",
   labelType: "LabelType",
   showLegend: "ShowLegend",
-  // gallery
+  histogramColumn: "HistogramColumn",         // Histogram 専用
+  stacked: "Stacked",                         // bar/column スタック
+  yAxisLabel: "YAxisLabel",                   // 新 Chart 体験
+  xAxisLabel: "XAxisLabel",                   // 新 Chart 体験
+
+  // ===== gallery =====
   imageSize: "ImageSize",
-  // onboarding
+  galleryImageColumn: "GalleryImageColumn",   // 表示画像列指定
+
+  // ===== onboarding =====
   image: "Image",
   title: "Title",
   firstBlurb: "FirstBlurb",
-  // grouping (各 view 共通系)
-  groupBy: "GroupBy",
-  sortBy: "SortBy",
-  primarySortColumn: "PrimarySortColumn",
-  isPrimarySortDescending: "IsPrimarySortDescending",
-  events: "Events",
+  secondBlurb: "SecondBlurb",                 // Second short blurb
+  pageBackgroundColor: "PageBackgroundColor", // ページ背景色
 };
 
 export async function setViewOptions(args: {
