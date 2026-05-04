@@ -3174,3 +3174,108 @@ export async function setSecurityFilter(args: {
     message: after === newFilter ? "✅ Security Filter 更新完了" : `⚠️ 期待 '${newFilter}' だが現在 '${after}'。複雑式は再パースされない可能性。`,
   };
 }
+
+export async function setColumnYNLabels(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  yesLabel: string;
+  noLabel: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; table: string; column: string; before: { yes: string; no: string }; requested: { yes: string; no: string }; after?: { yes: string; no: string }; verified?: boolean; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const attr = findAttribute(app, args.tableName, args.columnName);
+  if (attr.Type !== "Yes/No") {
+    throw new Error(`列 '${args.columnName}' は Yes/No 型ではありません (Type=${attr.Type})`);
+  }
+  const auxRaw = (attr.TypeAuxData ?? "{}") as string;
+  let aux: Record<string, unknown>;
+  try { aux = JSON.parse(auxRaw); } catch { aux = {}; }
+  const before = { yes: (aux.YesLabel ?? "") as string, no: (aux.NoLabel ?? "") as string };
+
+  if (before.yes === args.yesLabel && before.no === args.noLabel) {
+    return { dryRun: !args.apply, applied: false, table: args.tableName, column: args.columnName, before, requested: { yes: args.yesLabel, no: args.noLabel }, message: "変更不要（既に同じ値）" };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const target = findAttribute(a, args.tableName, args.columnName);
+    const targetAuxRaw = (target.TypeAuxData ?? "{}") as string;
+    let targetAux: Record<string, unknown>;
+    try { targetAux = JSON.parse(targetAuxRaw); } catch { targetAux = {}; }
+    targetAux.YesLabel = args.yesLabel;
+    targetAux.NoLabel = args.noLabel;
+    target.TypeAuxData = JSON.stringify(targetAux);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, table: args.tableName, column: args.columnName, before, requested: { yes: args.yesLabel, no: args.noLabel }, message: "dry-run。apply: true で実際送信。" };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
+  const refreshedAuxRaw = (refreshedAttr.TypeAuxData ?? "{}") as string;
+  let refreshedAux: Record<string, unknown>;
+  try { refreshedAux = JSON.parse(refreshedAuxRaw); } catch { refreshedAux = {}; }
+  const after = { yes: (refreshedAux.YesLabel ?? "") as string, no: (refreshedAux.NoLabel ?? "") as string };
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return { dryRun: false, applied: true, table: args.tableName, column: args.columnName, before, requested: { yes: args.yesLabel, no: args.noLabel }, after, verified: after.yes === args.yesLabel && after.no === args.noLabel, message: "送信完了・スナップショット更新済み" };
+}
+
+export async function setViewDisplayMode(args: {
+  appId?: string;
+  appName?: string;
+  viewName: string;
+  displayMode: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; viewName: string; before: string | null; requested: string; after?: string | null; verified?: boolean; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const controls = ((app as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  if (!controls) throw new Error("Controls 不明");
+  const view = controls.find((c) => c.Name === args.viewName);
+  if (!view) throw new Error(`View '${args.viewName}' が見つかりません`);
+
+  const viewDef = view.ViewDefinition as Record<string, unknown> | undefined;
+  if (!viewDef) throw new Error(`View '${args.viewName}' に ViewDefinition がありません`);
+  const $type = (viewDef.$type ?? "") as string;
+  if (!$type.includes("SlideshowViewSettings")) {
+    throw new Error(`View '${args.viewName}' は detail view ではありません ($type=${$type})。displayMode は detail view のみ対応`);
+  }
+  const before = (viewDef.DisplayMode ?? null) as string | null;
+
+  if (before === args.displayMode) {
+    return { dryRun: !args.apply, applied: false, viewName: args.viewName, before, requested: args.displayMode, message: "変更不要（既に同じ値）" };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const ctrls = ((a as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+    const target = ctrls?.find((c) => c.Name === args.viewName);
+    if (!target) throw new Error(`View '${args.viewName}' が見つかりません（リトライ時）`);
+    const targetDef = target.ViewDefinition as Record<string, unknown>;
+    targetDef.DisplayMode = args.displayMode;
+    const settingsRaw = (target.Settings ?? "{}") as string;
+    let settings: Record<string, unknown>;
+    try { settings = JSON.parse(settingsRaw); } catch { settings = {}; }
+    settings.DisplayMode = args.displayMode;
+    target.Settings = JSON.stringify(settings);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, viewName: args.viewName, before, requested: args.displayMode, message: "dry-run。apply: true で実際送信。" };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedCtrls = ((refreshed as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  const refreshedView = refreshedCtrls?.find((c) => c.Name === args.viewName);
+  const after = ((refreshedView?.ViewDefinition as Record<string, unknown>)?.DisplayMode ?? null) as string | null;
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return { dryRun: false, applied: true, viewName: args.viewName, before, requested: args.displayMode, after, verified: after === args.displayMode, message: after === args.displayMode ? "✅ DisplayMode 更新完了" : `⚠️ 期待 '${args.displayMode}' だが現在 '${after}'。AppSheet 側で再正規化された可能性` };
+}

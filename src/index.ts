@@ -72,6 +72,8 @@ import {
   addCallScriptTask,
   createTable,
   createView,
+  setColumnYNLabels,
+  setViewDisplayMode,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -642,6 +644,44 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_set_column_yn_labels",
+    description:
+      "Yes/No 型列の表示ラベル (YesLabel / NoLabel) を設定する。データ型は変更しない (TypeAuxData の YesLabel / NoLabel を更新)。例: 完了フラグ → '完了' / '未完了'。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string" },
+        yesLabel: { type: "string", description: "Yes (TRUE) 時の表示文字列" },
+        noLabel: { type: "string", description: "No (FALSE) 時の表示文字列" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "yesLabel", "noLabel"],
+    },
+  },
+  {
+    name: "appsheet_set_view_displaymode",
+    description:
+      "既存 detail view の DisplayMode を変更 (Automatic / SideBySide / Card 等)。view の Settings JSON と ViewDefinition.DisplayMode を同時更新。detail view ($type=SlideshowViewSettings) のみ対応。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        viewName: { type: "string" },
+        displayMode: {
+          type: "string",
+          enum: ["Automatic", "SideBySide", "Card"],
+          description: "表示モード。Automatic / SideBySide / Card",
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["viewName", "displayMode"],
+    },
+  },
+  {
     name: "appsheet_create_view",
     description:
       "View (Presentation.Controls の要素) を新規作成する。対応: table / card / detail / form / deck / dashboard / calendar / map / chart / gallery / onboarding (11 種)。kanban / gantt は AppSheet 現行 UI から削除されているため未対応。viewType ごとに ViewDefinition の $type と必須/特徴フィールドが異なる。Settings (JSON 文字列) と ViewDefinition (オブジェクト) を両方構築。デフォルト dry-run。",
@@ -1025,6 +1065,10 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return removeTable(args as Parameters<typeof removeTable>[0]);
     case "appsheet_set_column_description":
       return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
+    case "appsheet_set_column_yn_labels":
+      return setColumnYNLabels(args as Parameters<typeof setColumnYNLabels>[0]);
+    case "appsheet_set_view_displaymode":
+      return setViewDisplayMode(args as Parameters<typeof setViewDisplayMode>[0]);
     case "appsheet_set_security_filter":
       return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
     case "appsheet_promote_to_ref":
