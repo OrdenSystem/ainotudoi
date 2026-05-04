@@ -2534,7 +2534,8 @@ export async function addWebhookTask(args: {
   const taskComponentId = generateComponentId();
   const nodeComponentId = generateComponentId();
   const stepName = args.stepName ?? args.taskName;
-  const headerList = (args.headers ?? []).map((h) => ({ Name: h.name, Value: h.value }));
+  // HeaderList は "Name: Value" 形式の文字列配列 (HAR 観察で判明)
+  const headerList = (args.headers ?? []).map((h) => `${h.name}: ${h.value}`);
 
   const outputSchema = {
     ExprLookup: {},
@@ -2699,6 +2700,117 @@ export async function addBranchStep(args: {
     dryRun: false, applied: !!created, processName: args.processName, stepName: args.stepName,
     componentId,
     message: created ? `✅ Branch Step '${args.stepName}' を Process '${args.processName}' に追加完了` : `⚠️ saveapp Success だが事後検証で Branch Step 不在`,
+  };
+}
+
+// ===== removeStep =====
+// Process.Nodes から指定 Step を削除する。
+// TaskNode の場合、対応する Behavior.Tasks エントリも他に参照されていなければ削除。
+// IfNodes / ElseNodes 配下の子 Step は (現在は) 同階層のみ検索 (深い再帰は将来対応)。
+export async function removeStep(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  stepName?: string;        // StepName による削除 (推奨・デフォルト)
+  componentId?: string;     // ComponentId による削除 (重複名がある場合)
+  removeOrphanedTask?: boolean;  // true で TaskNode 削除時に紐づく Task も削除 (default true)
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  processName: string;
+  removedStep?: { stepName: string; nodeType: string; componentId: string; linkedTask?: string };
+  removedTask?: string;
+  message: string;
+}> {
+  if (!args.stepName && !args.componentId) {
+    throw new Error("stepName か componentId のいずれかを指定してください");
+  }
+
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+
+  const nodes = (targetProcess.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  const idx = nodes.findIndex((n) => {
+    if (args.componentId) return n.ComponentId === args.componentId;
+    return n.StepName === args.stepName;
+  });
+  if (idx < 0) {
+    const knownSteps = nodes.map((n) => `${n.StepName}(${(n.$type as string)?.split(',')[0]?.split('.').pop()})`).join(", ");
+    throw new Error(`Step '${args.stepName ?? args.componentId}' が見つかりません。Process Nodes: ${knownSteps}`);
+  }
+
+  const removingNode = nodes[idx];
+  const nodeType = ((removingNode.$type as string)?.split(',')[0]?.split('.').pop()) ?? "Unknown";
+  const removingComponentId = removingNode.ComponentId as string;
+  const linkedTaskName = (nodeType === "TaskNode") ? (removingNode.Task as string) : undefined;
+
+  // Tasks の他参照があるか調査
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  let removeOrphanedTask = false;
+  if (linkedTaskName && (args.removeOrphanedTask ?? true)) {
+    // 全 Process の全 Nodes から TaskNode で linkedTaskName を参照しているもの (自分以外) を探す
+    let otherRefCount = 0;
+    for (const p of processes) {
+      const ns = (p.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+      for (const n of ns) {
+        if (n === removingNode) continue;
+        if ((n.$type as string)?.includes("TaskNode") && n.Task === linkedTaskName) otherRefCount++;
+      }
+    }
+    if (otherRefCount === 0) removeOrphanedTask = true;
+  }
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    const procs = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+    const tp = procs.find((p) => p.Name === args.processName);
+    if (!tp) throw new Error(`Process '${args.processName}' が見つかりません（リトライ時）`);
+    const ns = (tp.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+    const i = ns.findIndex((n) => n.ComponentId === removingComponentId);
+    if (i >= 0) ns.splice(i, 1);
+    if (removeOrphanedTask && linkedTaskName) {
+      const ts = (beh.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+      const ti = ts.findIndex((t) => t.Name === linkedTaskName);
+      if (ti >= 0) ts.splice(ti, 1);
+    }
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false, processName: args.processName,
+      removedStep: { stepName: (removingNode.StepName as string) ?? "(unnamed)", nodeType, componentId: removingComponentId, linkedTask: linkedTaskName },
+      removedTask: removeOrphanedTask ? linkedTaskName : undefined,
+      message: `dry-run。Step '${removingNode.StepName ?? args.stepName}' (${nodeType}) を削除${removeOrphanedTask ? ` + Task '${linkedTaskName}' も削除` : ''}。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedProcs = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppProcesses as Array<Record<string, unknown>> | undefined;
+  const refreshedProc = refreshedProcs?.find((p) => p.Name === args.processName);
+  const stillThere = (refreshedProc?.Nodes as Array<Record<string, unknown>> | undefined)?.find((n) => n.ComponentId === removingComponentId);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !stillThere, processName: args.processName,
+    removedStep: { stepName: (removingNode.StepName as string) ?? "(unnamed)", nodeType, componentId: removingComponentId, linkedTask: linkedTaskName },
+    removedTask: removeOrphanedTask ? linkedTaskName : undefined,
+    message: !stillThere
+      ? `✅ Step 削除完了${removeOrphanedTask ? ` (Task '${linkedTaskName}' も削除)` : ''}`
+      : `⚠️ saveapp Success だが Step が残存`,
   };
 }
 

@@ -79,6 +79,7 @@ import {
   addSendEmailTask,
   addWebhookTask,
   addBranchStep,
+  removeStep,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -732,6 +733,23 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_remove_step",
+    description:
+      "Bot の Process から指定 Step を削除する。Process.Nodes から該当 Node を splice、TaskNode の場合は対応 Task も他参照が無ければ自動削除。\n\n## 識別方法\n- stepName で指定 (推奨・デフォルト)\n- 同名 step 複数の場合は componentId で指定\n\n## 動作\n- TaskNode 削除時: 他 Process/Step から参照されていない Task は Behavior.Tasks からも削除 (removeOrphanedTask=false で抑止可)\n- IfElseNode 削除時: IfNodes/ElseNodes 配下の子 Step も連動削除 (再帰的に消える)\n- RunActionNode / その他: Node のみ削除\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string", description: "削除対象の StepName" },
+        componentId: { type: "string", description: "ComponentId による削除 (重複名がある場合)" },
+        removeOrphanedTask: { type: "boolean", description: "TaskNode 削除時に紐づく Task も削除するか (default: true)" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName"],
+    },
+  },
+  {
     name: "appsheet_add_branch_step",
     description:
       "Bot の Process に Branch (If/Else) Step を追加する。Process.Nodes に IfElseNode ($type=ProcessNodes.IfElseNode, NodeType=IF_ELSE) を append。Task は不要。\n\n## 必須\n- processName / stepName / condition (式、'=' 自動付与)\n\n## 補足\n- IfNodes / ElseNodes は空で作成。子 Step は Editor 上 or 別途追加が必要 (現状本ツールは branch 作成のみ)\n\nデフォルト dry-run。",
@@ -1216,6 +1234,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addWebhookTask(args as Parameters<typeof addWebhookTask>[0]);
     case "appsheet_add_branch_step":
       return addBranchStep(args as Parameters<typeof addBranchStep>[0]);
+    case "appsheet_remove_step":
+      return removeStep(args as Parameters<typeof removeStep>[0]);
     case "appsheet_set_security_filter":
       return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
     case "appsheet_promote_to_ref":
