@@ -2336,6 +2336,210 @@ export async function addCallScriptTask(args: {
   };
 }
 
+// ===== setCallScriptTask =====
+// 既存 AppsScript Task の編集。scriptId / functionName / functionArguments /
+// tableName / asyncExec / forEntireTable / Task 名 (newName) を部分更新。
+// newName 指定時は全 Process の TaskNode.Task 参照も同時更新する。
+export async function setCallScriptTask(args: {
+  appId?: string;
+  appName?: string;
+  taskName: string;
+  newName?: string;
+  scriptId?: string;
+  functionName?: string;
+  functionArguments?: Array<{ name: string; expression: string }>; // 渡された場合は全置換
+  tableName?: string;
+  asyncExec?: boolean;
+  forEntireTable?: boolean;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  taskName: string;
+  before: { name: string; scriptId: unknown; functionName: unknown; functionArguments: unknown; tableName: unknown; asyncExec: unknown; forEntireTable: unknown };
+  after?: { name: string; scriptId: unknown; functionName: unknown; functionArguments: unknown; tableName: unknown; asyncExec: unknown; forEntireTable: unknown };
+  changes: string[];
+  affectedProcessNodes: string[]; // newName 適用時に更新された Process.Node の StepName 一覧
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+
+  const targetTask = tasks.find((t) => t.Name === args.taskName);
+  if (!targetTask) {
+    const known = tasks.map((t) => t.Name as string).join(", ");
+    throw new Error(`Task '${args.taskName}' が見つかりません。既知: ${known}`);
+  }
+
+  // 種別チェック (AppsScript Task のみ対象)
+  const taskType = targetTask.$type as string | undefined;
+  if (!taskType?.includes("AppWorkflowActionAppsScript")) {
+    throw new Error(`Task '${args.taskName}' は AppsScript Task ではありません ($type: ${taskType})`);
+  }
+
+  // 改名先重複チェック
+  if (args.newName !== undefined && args.newName !== args.taskName) {
+    if (tasks.find((t) => t.Name === args.newName)) {
+      throw new Error(`改名先 Task '${args.newName}' は既に存在します`);
+    }
+  }
+
+  // tableName 指定時は存在確認
+  if (args.tableName !== undefined) {
+    const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+    if (!dataSets.find((d) => d.Name === args.tableName)) {
+      throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+    }
+  }
+
+  // before スナップショット
+  const before = {
+    name: targetTask.Name as string,
+    scriptId: targetTask.ScriptId,
+    functionName: targetTask.FunctionName,
+    functionArguments: targetTask.FunctionArguments,
+    tableName: targetTask.TableName,
+    asyncExec: targetTask.AsyncExec,
+    forEntireTable: targetTask.ForEntireTable,
+  };
+
+  // 変更検出
+  const changes: string[] = [];
+  if (args.newName !== undefined && args.newName !== before.name) {
+    changes.push(`Name: ${before.name} → ${args.newName}`);
+  }
+  if (args.scriptId !== undefined && args.scriptId !== before.scriptId) {
+    changes.push(`ScriptId: ${before.scriptId ?? "(none)"} → ${args.scriptId}`);
+  }
+  if (args.functionName !== undefined && args.functionName !== before.functionName) {
+    changes.push(`FunctionName: ${before.functionName ?? "(none)"} → ${args.functionName}`);
+  }
+  if (args.functionArguments !== undefined) {
+    const beforeArgsStr = JSON.stringify(before.functionArguments ?? []);
+    const newArgs = args.functionArguments.map((a) => ({ Name: a.name, Expression: normalizeFormula(a.expression) }));
+    const newArgsStr = JSON.stringify(newArgs);
+    if (newArgsStr !== beforeArgsStr) {
+      changes.push(`FunctionArguments: ${(before.functionArguments as unknown[] | undefined)?.length ?? 0} 件 → ${newArgs.length} 件`);
+    }
+  }
+  if (args.tableName !== undefined && args.tableName !== before.tableName) {
+    changes.push(`TableName: ${before.tableName ?? "(none)"} → ${args.tableName}`);
+  }
+  if (args.asyncExec !== undefined && args.asyncExec !== before.asyncExec) {
+    changes.push(`AsyncExec: ${before.asyncExec} → ${args.asyncExec}`);
+  }
+  if (args.forEntireTable !== undefined && args.forEntireTable !== before.forEntireTable) {
+    changes.push(`ForEntireTable: ${before.forEntireTable} → ${args.forEntireTable}`);
+  }
+
+  // newName 適用時: 全 Process の TaskNode で Task=旧名 のものを検出
+  const affectedProcessNodes: string[] = [];
+  if (args.newName !== undefined && args.newName !== before.name) {
+    for (const p of processes) {
+      const ns = (p.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+      for (const n of ns) {
+        if ((n.$type as string)?.includes("TaskNode") && n.Task === args.taskName) {
+          affectedProcessNodes.push(`${p.Name}/${n.StepName ?? "(unnamed)"}`);
+        }
+      }
+    }
+  }
+
+  if (changes.length === 0) {
+    return {
+      dryRun: !args.apply,
+      applied: false,
+      taskName: args.taskName,
+      before,
+      changes: [],
+      affectedProcessNodes: [],
+      message: "変更なし（指定値が現状と同じ or 何も指定されていない）",
+    };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    const ts = (beh.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+    const t = ts.find((x) => x.Name === args.taskName);
+    if (!t) throw new Error(`Task '${args.taskName}' がリトライ時に見つかりません`);
+
+    if (args.scriptId !== undefined) t.ScriptId = args.scriptId;
+    if (args.functionName !== undefined) t.FunctionName = args.functionName;
+    if (args.functionArguments !== undefined) {
+      t.FunctionArguments = args.functionArguments.map((a) => ({ Name: a.name, Expression: normalizeFormula(a.expression) }));
+    }
+    if (args.tableName !== undefined) t.TableName = args.tableName;
+    if (args.asyncExec !== undefined) t.AsyncExec = args.asyncExec;
+    if (args.forEntireTable !== undefined) t.ForEntireTable = args.forEntireTable;
+
+    if (args.newName !== undefined && args.newName !== args.taskName) {
+      t.Name = args.newName;
+      // 全 Process の TaskNode 参照を更新
+      const ps = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+      for (const p of ps) {
+        const ns = (p.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+        for (const n of ns) {
+          if ((n.$type as string)?.includes("TaskNode") && n.Task === args.taskName) {
+            n.Task = args.newName;
+          }
+        }
+      }
+    }
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      taskName: args.taskName,
+      before,
+      changes,
+      affectedProcessNodes,
+      message: `dry-run。Task '${args.taskName}' を更新 (${changes.length} 件)${affectedProcessNodes.length ? ` + ${affectedProcessNodes.length} 個の TaskNode 参照も更新` : ""}。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const lookupName = args.newName ?? args.taskName;
+  const refreshedTask = refreshedTasks?.find((t) => t.Name === lookupName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  let after: typeof before | undefined;
+  if (refreshedTask) {
+    after = {
+      name: refreshedTask.Name as string,
+      scriptId: refreshedTask.ScriptId,
+      functionName: refreshedTask.FunctionName,
+      functionArguments: refreshedTask.FunctionArguments,
+      tableName: refreshedTask.TableName,
+      asyncExec: refreshedTask.AsyncExec,
+      forEntireTable: refreshedTask.ForEntireTable,
+    };
+  }
+
+  return {
+    dryRun: false,
+    applied: !!refreshedTask,
+    taskName: lookupName,
+    before,
+    after,
+    changes,
+    affectedProcessNodes,
+    message: refreshedTask
+      ? `✅ AppsScript Task '${lookupName}' 更新完了 (${changes.length} 件)${affectedProcessNodes.length ? ` + ${affectedProcessNodes.length} 個の TaskNode 参照も更新` : ""}`
+      : `⚠️ saveapp Success だが事後検証で Task 不在`,
+  };
+}
+
 // ===== addSendEmailTask =====
 // Email Task ($type=AppWorkflowActionEmail) を Behavior.Tasks に追加し、
 // Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Email) を append

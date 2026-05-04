@@ -70,6 +70,7 @@ import {
   addSlice,
   removeSlice,
   addCallScriptTask,
+  setCallScriptTask,
   createTable,
   createView,
   setColumnYNLabels,
@@ -982,6 +983,39 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_set_call_script_task",
+    description:
+      "既存 AppsScript Task の編集。scriptId / functionName / functionArguments / tableName / asyncExec / forEntireTable / Task 名 (newName) を部分更新。\n\n## 必須\n- taskName: 編集対象 Task 名\n\n## 任意 (どれか 1 つ以上)\n- newName: Task 改名 (全 Process の TaskNode.Task 参照も自動更新)\n- scriptId: 'DocId=...' 形式\n- functionName: 呼出関数名\n- functionArguments: [{name, expression}] 配列。指定時は **全置換**\n- tableName: スコープ対象テーブル\n- asyncExec / forEntireTable: 実行モード\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        taskName: { type: "string", description: "編集対象 Task 名" },
+        newName: { type: "string", description: "新しい Task 名 (TaskNode 参照も同時更新)" },
+        scriptId: { type: "string", description: "GAS スクリプト ID。'DocId=...' 形式" },
+        functionName: { type: "string" },
+        functionArguments: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              expression: { type: "string", description: "AppSheet 式。'=' 自動付与" },
+            },
+            required: ["name", "expression"],
+          },
+          description: "GAS 関数引数の **全置換**。空配列で全削除",
+        },
+        tableName: { type: "string" },
+        asyncExec: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        apply: { type: "boolean" },
+      },
+      required: ["taskName"],
+    },
+  },
+  {
     name: "appsheet_add_slice",
     description:
       "Slice (TableSlice) を新規追加する。クライアント側でフィルタ評価・列順カスタムができる。データ秘匿には使えない（→ Security Filter）。デフォルト dry-run。",
@@ -1280,6 +1314,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return removeSlice(args as Parameters<typeof removeSlice>[0]);
     case "appsheet_add_call_script_task":
       return addCallScriptTask(args as Parameters<typeof addCallScriptTask>[0]);
+    case "appsheet_set_call_script_task":
+      return setCallScriptTask(args as Parameters<typeof setCallScriptTask>[0]);
     case "appsheet_create_table":
       return createTable(args as Parameters<typeof createTable>[0]);
     case "appsheet_create_view":
