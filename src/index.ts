@@ -74,6 +74,7 @@ import {
   createView,
   setColumnYNLabels,
   setViewDisplayMode,
+  setViewOptions,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -662,6 +663,35 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_set_view_options",
+    description:
+      "既存 view の任意プロパティを部分更新する汎用ツール。Settings JSON と ViewDefinition を PATCH 的に同時更新。\n\n## 編集対象\n- **トップレベル**: newName (rename) / tableName / position / showIf / displayName / description\n- **ViewDefinition (options)**: create_view と同じ camelCase キー語彙。指定したキーのみ上書き、他はそのまま。\n\n## options の主な対応キー (camelCase → AppSheet 内部 PascalCase)\n- table: columnWidth / enableQuickEdit / columnOrder / sortBy / groupBy / groupAggregate\n- card / deck: imageShape / mainDeckImageColumn / primaryDeckHeaderColumn / secondaryDeckHeaderColumn / deckSummaryColumn / deckNestedTableColumn / showActionBar\n- detail: useCardLayout / mainSlideshowImageColumn / detailContentColumn / headerColumns / quickEditColumns / columnOrder / imageStyle / displayMode (Side-by-side 等) / maxNestedRows / slideshowMode / desktopSplitMode / useDesktopMultiColumn\n- form: pageStyle / formStyle / columnOrder / formFooterStyle (Bottom/Top) / autoSave / autoReopen / finishView / maxNestedRows / audioInput\n- dashboard: viewEntries / interactiveMode / showTabs\n- chart: chartType / chartColumns / groupAggregate / trendLine / showLegend\n- 共通: icon / menuOrder / sortBy / groupBy\n\n## 値の注意\n- displayMode は AppSheet 内部表記必須: Automatic / Normal / Centered / 'No headings' / 'Side-by-side'\n- imageShape: 'Square Image' / 'Round Image' / 'Full Image'\n- formStyle: Automatic / Default / 'Side-by-side'\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        viewName: { type: "string", description: "編集対象 view 名 (識別子)" },
+        newName: { type: "string", description: "rename 後の新 view 名 (任意)" },
+        tableName: { type: "string", description: "ソーステーブル/Slice 変更 (任意)" },
+        position: {
+          type: "string",
+          description: "left/center/right (PRIMARY) / menu (MENU) / ref (REFERENCE) / none (隠し)。first/next/middle/later/last は内部マップなしで直接送信されるので AppSheet 内部値を使用",
+        },
+        showIf: { type: ["string", "null"], description: "ShowIf 式。null で削除" },
+        displayName: { type: ["string", "null"], description: "DisplayName。null で削除" },
+        description: { type: ["string", "null"], description: "Description。null で削除" },
+        options: {
+          type: "object",
+          description: "ViewDefinition のプロパティを camelCase で指定。指定キーのみ更新、他はそのまま",
+          additionalProperties: true,
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["viewName"],
+    },
+  },
+  {
     name: "appsheet_set_view_displaymode",
     description:
       "既存 detail view の DisplayMode を変更。view の Settings JSON と ViewDefinition.DisplayMode を同時更新。detail view ($type=SlideshowViewSettings) のみ対応。デフォルト dry-run。\n\n値は AppSheet 内部表記に厳密一致が必要 (大文字小文字・ハイフン)。'SideBySide' ではなく 'Side-by-side'。",
@@ -1069,6 +1099,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return setColumnYNLabels(args as Parameters<typeof setColumnYNLabels>[0]);
     case "appsheet_set_view_displaymode":
       return setViewDisplayMode(args as Parameters<typeof setViewDisplayMode>[0]);
+    case "appsheet_set_view_options":
+      return setViewOptions(args as Parameters<typeof setViewOptions>[0]);
     case "appsheet_set_security_filter":
       return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
     case "appsheet_promote_to_ref":

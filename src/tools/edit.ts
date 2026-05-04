@@ -3279,3 +3279,188 @@ export async function setViewDisplayMode(args: {
 
   return { dryRun: false, applied: true, viewName: args.viewName, before, requested: args.displayMode, after, verified: after === args.displayMode, message: after === args.displayMode ? "✅ DisplayMode 更新完了" : `⚠️ 期待 '${args.displayMode}' だが現在 '${after}'。AppSheet 側で再正規化された可能性` };
 }
+
+// View Options camelCase → ViewDefinition PascalCase field 名 マッピング
+// create_view の buildViewDefinition と語彙を揃える
+const VIEW_OPTION_FIELD_MAP: Record<string, string> = {
+  // common
+  icon: "Icon",
+  menuOrder: "MenuOrder",
+  // table
+  columnWidth: "ColumnWidth",
+  enableQuickEdit: "EnableQuickEdit",
+  columnOrder: "ColumnOrder",
+  // card / deck
+  layout: "Layout",
+  mainDeckImageColumn: "MainDeckImageColumn",
+  imageShape: "ImageShape",
+  primaryDeckHeaderColumn: "PrimaryDeckHeaderColumn",
+  secondaryDeckHeaderColumn: "SecondaryDeckHeaderColumn",
+  deckSummaryColumn: "DeckSummaryColumn",
+  deckNestedTableColumn: "DeckNestedTableColumn",
+  showActionBar: "ShowActionBar",
+  // detail
+  mainSlideshowImageColumn: "MainSlideshowImageColumn",
+  detailContentColumn: "DetailContentColumn",
+  headerColumns: "HeaderColumns",
+  quickEditColumns: "QuickEditColumns",
+  imageStyle: "ImageStyle",
+  useCardLayout: "UseCardLayout",
+  displayMode: "DisplayMode",
+  maxNestedRows: "MaxNestedRows",
+  slideshowMode: "SlideshowMode",
+  desktopSplitMode: "DesktopSplitMode",
+  useDesktopMultiColumn: "UseDesktopMultiColumn",
+  // form
+  autoSave: "AutoSave",
+  autoReopen: "AutoReopen",
+  finishView: "FinishView",
+  rowKey: "RowKey",
+  formStyle: "FormStyle",
+  pageStyle: "PageStyle",
+  formFooterStyle: "FormFooterStyle",
+  audioInput: "AudioInput",
+  // dashboard
+  viewEntries: "ViewEntries",
+  interactiveMode: "InteractiveMode",
+  showTabs: "ShowTabs",
+  // calendar
+  startDateColumn: "StartDateColumn",
+  startTimeColumn: "StartTimeColumn",
+  endDateColumn: "EndDateColumn",
+  endTimeColumn: "EndTimeColumn",
+  labelColumn: "LabelColumn",
+  categoryColumn: "CategoryColumn",
+  defaultCalendarView: "DefaultCalendarView",
+  // map
+  mapType: "MapType",
+  mapColumn: "MapColumn",
+  locationMode: "LocationMode",
+  secondaryTable: "SecondaryTable",
+  secondaryColumn: "SecondaryColumn",
+  minimumClusterSize: "MinimumClusterSize",
+  // chart
+  chartType: "ChartType",
+  useNewChartExperience: "UseNewChartExperience",
+  chartConfig: "ChartConfig",
+  chartColumns: "ChartColumns",
+  groupAggregate: "GroupAggregate",
+  trendLine: "TrendLine",
+  chartColors: "ChartColors",
+  labelType: "LabelType",
+  showLegend: "ShowLegend",
+  // gallery
+  imageSize: "ImageSize",
+  // onboarding
+  image: "Image",
+  title: "Title",
+  firstBlurb: "FirstBlurb",
+  // grouping (各 view 共通系)
+  groupBy: "GroupBy",
+  sortBy: "SortBy",
+  primarySortColumn: "PrimarySortColumn",
+  isPrimarySortDescending: "IsPrimarySortDescending",
+  events: "Events",
+};
+
+export async function setViewOptions(args: {
+  appId?: string;
+  appName?: string;
+  viewName: string;
+  newName?: string;
+  tableName?: string;
+  position?: string;
+  showIf?: string | null;
+  displayName?: string | null;
+  description?: string | null;
+  options?: Record<string, unknown>;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; viewName: string; changes: Record<string, { before: unknown; after?: unknown }>; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const controls = ((app as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  if (!controls) throw new Error("Controls 不明");
+  const view = controls.find((c) => c.Name === args.viewName);
+  if (!view) throw new Error(`View '${args.viewName}' が見つかりません`);
+
+  const viewDef = view.ViewDefinition as Record<string, unknown> | undefined;
+  if (!viewDef) throw new Error(`View '${args.viewName}' に ViewDefinition がありません`);
+
+  // 変更前の値を記録
+  const changes: Record<string, { before: unknown; after?: unknown }> = {};
+  const recordChange = (key: string, before: unknown) => { changes[key] = { before }; };
+
+  if (args.newName !== undefined && args.newName !== view.Name) recordChange("Name", view.Name);
+  if (args.tableName !== undefined && args.tableName !== view.TableOrFolderName) recordChange("TableOrFolderName", view.TableOrFolderName);
+  if (args.position !== undefined && args.position !== view.Position) recordChange("Position", view.Position);
+  if (args.showIf !== undefined) recordChange("ShowIf", view.ShowIf);
+  if (args.displayName !== undefined) recordChange("DisplayName", view.DisplayName);
+  if (args.description !== undefined) recordChange("Description", view.Description);
+
+  if (args.options) {
+    for (const [optKey] of Object.entries(args.options)) {
+      const fieldKey = VIEW_OPTION_FIELD_MAP[optKey] ?? optKey;
+      const before = viewDef[fieldKey];
+      recordChange(fieldKey, before);
+    }
+  }
+
+  if (Object.keys(changes).length === 0) {
+    return { dryRun: !args.apply, applied: false, viewName: args.viewName, changes: {}, message: "変更なし（指定値が既存値と同じ or オプション未指定）" };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const ctrls = ((a as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+    const target = ctrls?.find((c) => c.Name === args.viewName);
+    if (!target) throw new Error(`View '${args.viewName}' が見つかりません（リトライ時）`);
+
+    if (args.newName !== undefined) target.Name = args.newName;
+    if (args.tableName !== undefined) target.TableOrFolderName = args.tableName;
+    if (args.position !== undefined) target.Position = args.position;
+    if (args.showIf !== undefined) target.ShowIf = args.showIf === null ? null : args.showIf;
+    if (args.displayName !== undefined) target.DisplayName = args.displayName;
+    if (args.description !== undefined) target.Description = args.description;
+
+    if (args.options) {
+      const targetDef = target.ViewDefinition as Record<string, unknown>;
+      let settings: Record<string, unknown>;
+      try { settings = JSON.parse((target.Settings ?? "{}") as string); } catch { settings = {}; }
+      for (const [optKey, value] of Object.entries(args.options)) {
+        const fieldKey = VIEW_OPTION_FIELD_MAP[optKey] ?? optKey;
+        targetDef[fieldKey] = value;
+        settings[fieldKey] = value;
+      }
+      target.Settings = JSON.stringify(settings);
+    }
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, viewName: args.viewName, changes, message: "dry-run。apply: true で実際送信。" };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedCtrls = ((refreshed as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  // newName がある場合は新名で探す
+  const lookupName = args.newName ?? args.viewName;
+  const refreshedView = refreshedCtrls?.find((c) => c.Name === lookupName);
+  if (refreshedView) {
+    const refreshedDef = refreshedView.ViewDefinition as Record<string, unknown> | undefined;
+    for (const key of Object.keys(changes)) {
+      let after: unknown;
+      if (key === "Name") after = refreshedView.Name;
+      else if (key === "TableOrFolderName") after = refreshedView.TableOrFolderName;
+      else if (key === "Position") after = refreshedView.Position;
+      else if (key === "ShowIf") after = refreshedView.ShowIf;
+      else if (key === "DisplayName") after = refreshedView.DisplayName;
+      else if (key === "Description") after = refreshedView.Description;
+      else after = refreshedDef?.[key];
+      changes[key].after = after;
+    }
+  }
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  const changeCount = Object.keys(changes).length;
+  return { dryRun: false, applied: true, viewName: lookupName, changes, message: `✅ View options 更新完了 (${changeCount} 件)` };
+}
