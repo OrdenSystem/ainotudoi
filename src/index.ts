@@ -664,7 +664,7 @@ const tools: Tool[] = [
   {
     name: "appsheet_set_view_displaymode",
     description:
-      "既存 detail view の DisplayMode を変更 (Automatic / SideBySide / Card 等)。view の Settings JSON と ViewDefinition.DisplayMode を同時更新。detail view ($type=SlideshowViewSettings) のみ対応。デフォルト dry-run。",
+      "既存 detail view の DisplayMode を変更。view の Settings JSON と ViewDefinition.DisplayMode を同時更新。detail view ($type=SlideshowViewSettings) のみ対応。デフォルト dry-run。\n\n値は AppSheet 内部表記に厳密一致が必要 (大文字小文字・ハイフン)。'SideBySide' ではなく 'Side-by-side'。",
     inputSchema: {
       type: "object",
       properties: {
@@ -673,8 +673,8 @@ const tools: Tool[] = [
         viewName: { type: "string" },
         displayMode: {
           type: "string",
-          enum: ["Automatic", "SideBySide", "Card"],
-          description: "表示モード。Automatic / SideBySide / Card",
+          enum: ["Automatic", "Normal", "Centered", "No headings", "Side-by-side"],
+          description: "AppSheet 内部値。Automatic / Normal / Centered / No headings / Side-by-side",
         },
         apply: { type: "boolean" },
       },
