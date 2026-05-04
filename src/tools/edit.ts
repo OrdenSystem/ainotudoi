@@ -3018,6 +3018,113 @@ export async function removeStep(args: {
   };
 }
 
+// ===== moveStep =====
+// Process.Nodes 配列内で Step を任意位置に移動する。
+// IfNodes/ElseNodes 配下のネストした step は範囲外 (現行は同階層のみ)。
+export async function moveStep(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  stepName?: string;       // 識別子: 推奨
+  componentId?: string;    // 同名 step がある場合に使用
+  toIndex: number;         // 移動先 index (0 始まり、Process.Nodes の長さ未満)
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  processName: string;
+  stepName?: string;
+  fromIndex: number;
+  toIndex: number;
+  order: { before: string[]; after?: string[] };
+  message: string;
+}> {
+  if (!args.stepName && !args.componentId) {
+    throw new Error("stepName か componentId のいずれかを指定してください");
+  }
+  if (typeof args.toIndex !== "number" || args.toIndex < 0 || !Number.isInteger(args.toIndex)) {
+    throw new Error("toIndex は 0 以上の整数を指定してください");
+  }
+
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+
+  const nodes = (targetProcess.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  const fromIndex = nodes.findIndex((n) => {
+    if (args.componentId) return n.ComponentId === args.componentId;
+    return n.StepName === args.stepName;
+  });
+  if (fromIndex < 0) {
+    const knownSteps = nodes.map((n) => n.StepName as string ?? "(unnamed)").join(", ");
+    throw new Error(`Step '${args.stepName ?? args.componentId}' が見つかりません。Process Nodes: ${knownSteps}`);
+  }
+  if (args.toIndex >= nodes.length) {
+    throw new Error(`toIndex ${args.toIndex} は Process.Nodes の長さ ${nodes.length} を超えています (最大: ${nodes.length - 1})`);
+  }
+  const targetStepName = (nodes[fromIndex].StepName as string) ?? "(unnamed)";
+
+  const orderBefore = nodes.map((n) => (n.StepName as string) ?? "(unnamed)");
+
+  if (fromIndex === args.toIndex) {
+    return {
+      dryRun: !args.apply, applied: false, processName: args.processName, stepName: targetStepName,
+      fromIndex, toIndex: args.toIndex,
+      order: { before: orderBefore },
+      message: `Step '${targetStepName}' は既に index ${args.toIndex} にあります (変更なし)`,
+    };
+  }
+
+  const movingComponentId = nodes[fromIndex].ComponentId as string;
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    const procs = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+    const tp = procs.find((p) => p.Name === args.processName);
+    if (!tp) throw new Error(`Process '${args.processName}' が見つかりません（リトライ時）`);
+    const ns = (tp.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+    const i = ns.findIndex((n) => n.ComponentId === movingComponentId);
+    if (i < 0) throw new Error(`Step がリトライ時に見つかりません`);
+    const [moved] = ns.splice(i, 1);
+    ns.splice(args.toIndex, 0, moved);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    const refreshedNodes = (targetProcess.Nodes as Array<Record<string, unknown>>) ?? [];
+    const orderAfter = refreshedNodes.map((n) => (n.StepName as string) ?? "(unnamed)");
+    return {
+      dryRun: true, applied: false, processName: args.processName, stepName: targetStepName,
+      fromIndex, toIndex: args.toIndex,
+      order: { before: orderBefore, after: orderAfter },
+      message: `dry-run。Step '${targetStepName}' を index ${fromIndex} → ${args.toIndex} に移動。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedProcs = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppProcesses as Array<Record<string, unknown>> | undefined;
+  const refreshedProc = refreshedProcs?.find((p) => p.Name === args.processName);
+  const refreshedNodes = (refreshedProc?.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  const orderAfter = refreshedNodes.map((n) => (n.StepName as string) ?? "(unnamed)");
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: true, processName: args.processName, stepName: targetStepName,
+    fromIndex, toIndex: args.toIndex,
+    order: { before: orderBefore, after: orderAfter },
+    message: `✅ Step '${targetStepName}' 移動完了 (index ${fromIndex} → ${args.toIndex})`,
+  };
+}
+
 export async function addSlice(args: {
   appId?: string;
   appName?: string;
@@ -3737,6 +3844,137 @@ function schemaTable(app: AppDef, schemaName: string): string | undefined {
   const schemas = app.AppData?.DataSchemas ?? [];
   const s = schemas.find((s) => s.Name === schemaName);
   return s?.AutoSchemaFrom ?? undefined;
+}
+
+// ===== setBotOptions =====
+// Bot のメタ情報のみ編集 (Trigger は触らない)。
+// - newName: Bot 改名 (Bot.Name と Event/Process 経由の参照は EventName/ProcessName のままなので影響なし)
+// - icon: Material Icons / FontAwesome 名
+// - comment: Bot に紐付くコメント
+// - disabled: 有効/無効 (set_bot_trigger と被るが、Trigger 編集なしで切替えたい時に便利)
+export async function setBotOptions(args: {
+  appId?: string;
+  appName?: string;
+  botName: string;
+  newName?: string;
+  icon?: string | null;
+  comment?: string | null;
+  disabled?: boolean;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  botName: string;
+  before: { name: string; icon: unknown; comment: unknown; disabled: boolean };
+  after?: { name: string; icon: unknown; comment: unknown; disabled: boolean };
+  changes: string[];
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const bots = (behavior.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+
+  const targetBot = bots.find((b) => b.Name === args.botName);
+  if (!targetBot) {
+    const known = bots.map((b) => b.Name as string).join(", ");
+    throw new Error(`Bot '${args.botName}' が見つかりません。既知: ${known}`);
+  }
+
+  // 改名先重複チェック
+  if (args.newName !== undefined && args.newName !== args.botName) {
+    if (bots.find((b) => b.Name === args.newName)) {
+      throw new Error(`改名先 Bot '${args.newName}' は既に存在します`);
+    }
+  }
+
+  const before = {
+    name: targetBot.Name as string,
+    icon: targetBot.Icon,
+    comment: targetBot.Comment,
+    disabled: (targetBot.Disabled as boolean) ?? false,
+  };
+
+  const changes: string[] = [];
+  if (args.newName !== undefined && args.newName !== before.name) {
+    changes.push(`Name: ${before.name} → ${args.newName}`);
+  }
+  if (args.icon !== undefined && args.icon !== before.icon) {
+    changes.push(`Icon: ${before.icon ?? "(none)"} → ${args.icon ?? "(null)"}`);
+  }
+  if (args.comment !== undefined && args.comment !== before.comment) {
+    changes.push(`Comment: ${before.comment ?? "(none)"} → ${args.comment ?? "(null)"}`);
+  }
+  if (args.disabled !== undefined && args.disabled !== before.disabled) {
+    changes.push(`Disabled: ${before.disabled} → ${args.disabled}`);
+  }
+
+  if (changes.length === 0) {
+    return {
+      dryRun: !args.apply,
+      applied: false,
+      botName: args.botName,
+      before,
+      changes: [],
+      message: "変更なし（指定値が現状と同じ or 何も指定されていない）",
+    };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    const bs = (beh.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+    const t = bs.find((b) => b.Name === args.botName);
+    if (!t) throw new Error(`Bot '${args.botName}' がリトライ時に見つかりません`);
+
+    if (args.newName !== undefined) t.Name = args.newName;
+    if (args.icon !== undefined) t.Icon = args.icon;
+    if (args.comment !== undefined) t.Comment = args.comment;
+    if (args.disabled !== undefined) t.Disabled = args.disabled;
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      botName: args.botName,
+      before,
+      changes,
+      message: `dry-run。Bot '${args.botName}' を更新 (${changes.length} 件)。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedBots = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppBots as Array<Record<string, unknown>> | undefined;
+  const lookupName = args.newName ?? args.botName;
+  const refreshedBot = refreshedBots?.find((b) => b.Name === lookupName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  let after: typeof before | undefined;
+  if (refreshedBot) {
+    after = {
+      name: refreshedBot.Name as string,
+      icon: refreshedBot.Icon,
+      comment: refreshedBot.Comment,
+      disabled: (refreshedBot.Disabled as boolean) ?? false,
+    };
+  }
+
+  return {
+    dryRun: false,
+    applied: !!refreshedBot,
+    botName: lookupName,
+    before,
+    after,
+    changes,
+    message: refreshedBot
+      ? `✅ Bot '${lookupName}' 更新完了 (${changes.length} 件)`
+      : `⚠️ saveapp Success だが事後検証で Bot 不在`,
+  };
 }
 
 export async function addOpenUrlAction(args: {

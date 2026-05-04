@@ -81,7 +81,9 @@ import {
   addWebhookTask,
   addBranchStep,
   removeStep,
+  moveStep,
   setBotTrigger,
+  setBotOptions,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -752,6 +754,23 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_move_step",
+    description:
+      "Process.Nodes 内で Step を任意の位置に移動する (並び替え)。IfNodes/ElseNodes 配下のネストは範囲外。\n\n## 必須\n- processName: 対象 Process 名\n- toIndex: 移動先 index (0 始まり、Process.Nodes の長さ未満)\n\n## 識別 (どちらか必須)\n- stepName: StepName で識別 (推奨)\n- componentId: 同名 step がある場合に使用\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string", description: "移動対象の StepName" },
+        componentId: { type: "string" },
+        toIndex: { type: "number", description: "移動先 index (0 始まり)" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "toIndex"],
+    },
+  },
+  {
     name: "appsheet_add_branch_step",
     description:
       "Bot の Process に Branch (If/Else) Step を追加する。Process.Nodes に IfElseNode ($type=ProcessNodes.IfElseNode, NodeType=IF_ELSE) を append。Task は不要。\n\n## 必須\n- processName / stepName / condition (式、'=' 自動付与)\n\n## 補足\n- IfNodes / ElseNodes は空で作成。子 Step は Editor 上 or 別途追加が必要 (現状本ツールは branch 作成のみ)\n\nデフォルト dry-run。",
@@ -788,6 +807,24 @@ const tools: Tool[] = [
             region: { type: "string" },
           },
         },
+        disabled: { type: "boolean" },
+        apply: { type: "boolean" },
+      },
+      required: ["botName"],
+    },
+  },
+  {
+    name: "appsheet_set_bot_options",
+    description:
+      "Bot のメタ情報のみを編集する (Trigger/Process/Tasks は触らない)。改名 / アイコン / コメント / 有効・無効 を partial update。\n\n## 必須\n- botName: 編集対象 Bot 名\n\n## 任意 (どれか 1 つ以上)\n- newName: Bot 改名 (Event/Process は EventName/ProcessName で参照されており影響なし)\n- icon: アイコン (FontAwesome / Material Icons 名)。null で削除\n- comment: コメント。null で削除\n- disabled: 有効/無効\n\n## set_bot_trigger との使い分け\n- Trigger 関連 (eventType/cron/filterCondition) を変えたい → set_bot_trigger\n- Bot 名やアイコン/コメントだけ変えたい → set_bot_options\n- Disabled だけはどちらでも可\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        botName: { type: "string" },
+        newName: { type: "string" },
+        icon: { type: ["string", "null"], description: "アイコン名。null で削除" },
+        comment: { type: ["string", "null"], description: "コメント。null で削除" },
         disabled: { type: "boolean" },
         apply: { type: "boolean" },
       },
@@ -1298,8 +1335,12 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addBranchStep(args as Parameters<typeof addBranchStep>[0]);
     case "appsheet_remove_step":
       return removeStep(args as Parameters<typeof removeStep>[0]);
+    case "appsheet_move_step":
+      return moveStep(args as Parameters<typeof moveStep>[0]);
     case "appsheet_set_bot_trigger":
       return setBotTrigger(args as Parameters<typeof setBotTrigger>[0]);
+    case "appsheet_set_bot_options":
+      return setBotOptions(args as Parameters<typeof setBotOptions>[0]);
     case "appsheet_set_security_filter":
       return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
     case "appsheet_promote_to_ref":
