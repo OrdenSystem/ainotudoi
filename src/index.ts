@@ -76,6 +76,9 @@ import {
   setViewDisplayMode,
   setViewOptions,
   setColumnOptions,
+  addSendEmailTask,
+  addWebhookTask,
+  addBranchStep,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -664,6 +667,87 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_send_email_task",
+    description:
+      "Bot の Process に Send Email Task を追加する。Behavior.Tasks に Email Task ($type=AppWorkflowActionEmail) を作成し、Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Email) を append。\n\n## 必須\n- processName: 既存 Process の Name (Bot 作成時に Process が同時生成される)\n- taskName: Task のユニーク名\n- tableName: 対象テーブル\n- subject: メール件名 ('<<[列名]>>' で動的展開可)\n\n## 任意\n- toList / ccList / bccList: 宛先メール配列\n- body: 本文 ('<<[列名]>>' 展開可)\n- emailType: 'CustomTemplate' (default) / 'AppDefault'\n- attachmentTemplate / attachmentContentType (PDF/DOCX/XLSX/HTML/CSV)\n- forEntireTable: true でスケジュール時テーブル全行送信\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        toList: { type: "array", items: { type: "string" } },
+        ccList: { type: "array", items: { type: "string" } },
+        bccList: { type: "array", items: { type: "string" } },
+        fromAddress: { type: "string" },
+        fromDisplay: { type: "string" },
+        replyTo: { type: "string" },
+        preHeader: { type: "string" },
+        subject: { type: "string" },
+        body: { type: "string" },
+        emailType: { type: "string", enum: ["CustomTemplate", "AppDefault"] },
+        bodyTemplate: { type: ["string", "null"] },
+        attachmentTemplate: { type: ["string", "null"] },
+        attachmentName: { type: ["string", "null"] },
+        attachmentContentType: { type: "string", enum: ["PDF", "DOCX", "XLSX", "HTML", "CSV"] },
+        useDefaultContent: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName", "subject"],
+    },
+  },
+  {
+    name: "appsheet_add_webhook_task",
+    description:
+      "Bot の Process に Webhook Task を追加する。Behavior.Tasks に Webhook Task ($type=AppWorkflowActionWebhook) を作成し、Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Webhook) を append。\n\n## 必須\n- processName / taskName / tableName / url\n\n## 任意\n- preset: 'Custom' (default) / 'Slack Hook' / 'AppSheet API'\n- verb: 'Get' / 'Post' (default) / 'Put' / 'Delete' / 'Patch'\n- contentType: 'JSON' (default) / 'XML' / 'FormUrlEncoded'\n- body: リクエストボディ (templating可)\n- headers: [{name, value}] 配列\n- timeoutSeconds: default 180\n- maxRetryCount: default 3\n- asyncExec: 非同期実行\n- targetAppId: AppSheet API preset 用の対象 App ID\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        url: { type: "string" },
+        preset: { type: "string", enum: ["Custom", "Slack Hook", "AppSheet API"] },
+        verb: { type: "string", enum: ["Get", "Post", "Put", "Delete", "Patch"] },
+        contentType: { type: "string", enum: ["JSON", "XML", "FormUrlEncoded"] },
+        body: { type: "string" },
+        bodyTemplate: { type: ["string", "null"] },
+        headers: {
+          type: "array",
+          items: { type: "object", properties: { name: { type: "string" }, value: { type: "string" } }, required: ["name", "value"] },
+        },
+        timeoutSeconds: { type: "number" },
+        maxRetryCount: { type: "number" },
+        asyncExec: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        targetAppId: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName", "url"],
+    },
+  },
+  {
+    name: "appsheet_add_branch_step",
+    description:
+      "Bot の Process に Branch (If/Else) Step を追加する。Process.Nodes に IfElseNode ($type=ProcessNodes.IfElseNode, NodeType=IF_ELSE) を append。Task は不要。\n\n## 必須\n- processName / stepName / condition (式、'=' 自動付与)\n\n## 補足\n- IfNodes / ElseNodes は空で作成。子 Step は Editor 上 or 別途追加が必要 (現状本ツールは branch 作成のみ)\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string" },
+        condition: { type: "string", description: "条件式。'=' 自動付与" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "stepName", "condition"],
+    },
+  },
+  {
     name: "appsheet_set_column_options",
     description:
       "既存列の任意プロパティを部分更新する汎用ツール。Column の attribute トップレベル / TypeAuxData (JSON) / InternalQualifier (コンパイル済みキャッシュ) を適切な箇所に振り分けて PATCH 的に同時更新。\n\n## 編集対象 (camelCase キー → AppSheet 内部表記)\n### Display 系\n- displayName / description (Column edit screen の Display name / Description)\n\n### Other Properties (boolean フラグ)\n- isLabel / isHidden / searchable / isScannable / isNfcScannable / isSensitive\n\n### Update Behavior\n- isKey / isRequired / resetOnEdit / defEdit (Editable?)\n\n### Auto Compute\n- appFormula (App formula。'=' が無ければ自動付与) / initialValue (Default。式は '=' 付与)\n\n### Data Validity (式)\n- validIf / errorMessageIfInvalid / requiredIf / editableIf / resetIf / showIf / suggestedValues\n  (式は '=' を自動 normalize、null で削除)\n\n### Type-specific (TypeAuxData)\n- yesLabel / noLabel (Yes/No 型)\n- inputMode (Ref 型: 'Auto' / 'Buttons' / 'Dropdown')\n- isPartOf (Ref 型: 'Is a part of?' boolean)\n- referencedTableName (Ref 型: Source table)\n- externalRelationshipName (Ref 型: External relationship name)\n\n### Rename\n- newName で列名変更 (注意: 他箇所で参照されている場合は手動修正が必要)\n\n## キャッシュ無効化\n式系を更新したとき、対応する InternalQualifier の AppEval キャッシュを自動削除して AppSheet に再コンパイルさせる。\n\nデフォルト dry-run。",
@@ -1126,6 +1210,12 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return setViewOptions(args as Parameters<typeof setViewOptions>[0]);
     case "appsheet_set_column_options":
       return setColumnOptions(args as Parameters<typeof setColumnOptions>[0]);
+    case "appsheet_add_send_email_task":
+      return addSendEmailTask(args as Parameters<typeof addSendEmailTask>[0]);
+    case "appsheet_add_webhook_task":
+      return addWebhookTask(args as Parameters<typeof addWebhookTask>[0]);
+    case "appsheet_add_branch_step":
+      return addBranchStep(args as Parameters<typeof addBranchStep>[0]);
     case "appsheet_set_security_filter":
       return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
     case "appsheet_promote_to_ref":
