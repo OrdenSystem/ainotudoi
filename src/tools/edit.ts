@@ -829,14 +829,23 @@ export async function removeBot(args: {
   const eventName = bot.EventName as string | undefined;
   const processName = bot.ProcessName as string | undefined;
 
-  // 紐づく Process の Nodes が参照する Task 名を集める
+  // 紐づく Process の Nodes が参照する Task 名を集める。
+  // RunActionNode は n.Action (DataActions 名) / TaskNode は n.Task (Behavior.Tasks 名)。
+  // IfElseNode の IfNodes / ElseNodes 配下も再帰的にスキャン。
   const taskNamesToRemove = new Set<string>();
+  const collectTaskRefs = (nodes: Array<Record<string, unknown>>): void => {
+    for (const n of nodes) {
+      if (typeof n.Task === "string") taskNamesToRemove.add(n.Task);
+      // RunActionNode の Action は DataActions 名なので Tasks には入っていないが、
+      // 念のため保持 (将来的に名前空間がぶつかった場合の安全策)。
+      if (typeof n.Action === "string") taskNamesToRemove.add(n.Action);
+      if (Array.isArray(n.IfNodes)) collectTaskRefs(n.IfNodes as Array<Record<string, unknown>>);
+      if (Array.isArray(n.ElseNodes)) collectTaskRefs(n.ElseNodes as Array<Record<string, unknown>>);
+    }
+  };
   if (processName) {
     const proc = processes.find((p) => p.Name === processName);
-    const nodes = (proc?.Nodes ?? []) as Array<Record<string, unknown>>;
-    for (const n of nodes) {
-      if (typeof n.Action === "string") taskNamesToRemove.add(n.Action);
-    }
+    collectTaskRefs((proc?.Nodes ?? []) as Array<Record<string, unknown>>);
   }
 
   bots.splice(botIdx, 1);
@@ -2273,7 +2282,7 @@ export async function addCallScriptTask(args: {
     AlwaysRunAsDeployed: false,
     IsEmbedded: false,
     Scope: "PROCESS",
-    CreatedBy: "User",
+    CreatedBy: "App owner",
     Inputs: [],
     Comment: null,
     IsValid: true,
@@ -2333,6 +2342,817 @@ export async function addCallScriptTask(args: {
     message: created
       ? `✅ AppsScript Task '${args.taskName}' 作成 + Process '${args.processName}' 連結完了。戻り値は [${stepName}].[Output] で参照可能。`
       : `⚠️ saveapp Success だが事後検証で Task 不在`,
+  };
+}
+
+// ===== setCallScriptTask =====
+// 既存 AppsScript Task の編集。scriptId / functionName / functionArguments /
+// tableName / asyncExec / forEntireTable / Task 名 (newName) を部分更新。
+// newName 指定時は全 Process の TaskNode.Task 参照も同時更新する。
+export async function setCallScriptTask(args: {
+  appId?: string;
+  appName?: string;
+  taskName: string;
+  newName?: string;
+  scriptId?: string;
+  functionName?: string;
+  functionArguments?: Array<{ name: string; expression: string }>; // 渡された場合は全置換
+  tableName?: string;
+  asyncExec?: boolean;
+  forEntireTable?: boolean;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  taskName: string;
+  before: { name: string; scriptId: unknown; functionName: unknown; functionArguments: unknown; tableName: unknown; asyncExec: unknown; forEntireTable: unknown };
+  after?: { name: string; scriptId: unknown; functionName: unknown; functionArguments: unknown; tableName: unknown; asyncExec: unknown; forEntireTable: unknown };
+  changes: string[];
+  affectedProcessNodes: string[]; // newName 適用時に更新された Process.Node の StepName 一覧
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+
+  const targetTask = tasks.find((t) => t.Name === args.taskName);
+  if (!targetTask) {
+    const known = tasks.map((t) => t.Name as string).join(", ");
+    throw new Error(`Task '${args.taskName}' が見つかりません。既知: ${known}`);
+  }
+
+  // 種別チェック (AppsScript Task のみ対象)
+  const taskType = targetTask.$type as string | undefined;
+  if (!taskType?.includes("AppWorkflowActionAppsScript")) {
+    throw new Error(`Task '${args.taskName}' は AppsScript Task ではありません ($type: ${taskType})`);
+  }
+
+  // 改名先重複チェック
+  if (args.newName !== undefined && args.newName !== args.taskName) {
+    if (tasks.find((t) => t.Name === args.newName)) {
+      throw new Error(`改名先 Task '${args.newName}' は既に存在します`);
+    }
+  }
+
+  // tableName 指定時は存在確認
+  if (args.tableName !== undefined) {
+    const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+    if (!dataSets.find((d) => d.Name === args.tableName)) {
+      throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+    }
+  }
+
+  // before スナップショット
+  const before = {
+    name: targetTask.Name as string,
+    scriptId: targetTask.ScriptId,
+    functionName: targetTask.FunctionName,
+    functionArguments: targetTask.FunctionArguments,
+    tableName: targetTask.TableName,
+    asyncExec: targetTask.AsyncExec,
+    forEntireTable: targetTask.ForEntireTable,
+  };
+
+  // 変更検出
+  const changes: string[] = [];
+  if (args.newName !== undefined && args.newName !== before.name) {
+    changes.push(`Name: ${before.name} → ${args.newName}`);
+  }
+  if (args.scriptId !== undefined && args.scriptId !== before.scriptId) {
+    changes.push(`ScriptId: ${before.scriptId ?? "(none)"} → ${args.scriptId}`);
+  }
+  if (args.functionName !== undefined && args.functionName !== before.functionName) {
+    changes.push(`FunctionName: ${before.functionName ?? "(none)"} → ${args.functionName}`);
+  }
+  if (args.functionArguments !== undefined) {
+    const beforeArgsStr = JSON.stringify(before.functionArguments ?? []);
+    const newArgs = args.functionArguments.map((a) => ({ Name: a.name, Expression: normalizeFormula(a.expression) }));
+    const newArgsStr = JSON.stringify(newArgs);
+    if (newArgsStr !== beforeArgsStr) {
+      changes.push(`FunctionArguments: ${(before.functionArguments as unknown[] | undefined)?.length ?? 0} 件 → ${newArgs.length} 件`);
+    }
+  }
+  if (args.tableName !== undefined && args.tableName !== before.tableName) {
+    changes.push(`TableName: ${before.tableName ?? "(none)"} → ${args.tableName}`);
+  }
+  if (args.asyncExec !== undefined && args.asyncExec !== before.asyncExec) {
+    changes.push(`AsyncExec: ${before.asyncExec} → ${args.asyncExec}`);
+  }
+  if (args.forEntireTable !== undefined && args.forEntireTable !== before.forEntireTable) {
+    changes.push(`ForEntireTable: ${before.forEntireTable} → ${args.forEntireTable}`);
+  }
+
+  // newName 適用時: 全 Process の TaskNode で Task=旧名 のものを検出
+  const affectedProcessNodes: string[] = [];
+  if (args.newName !== undefined && args.newName !== before.name) {
+    for (const p of processes) {
+      const ns = (p.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+      for (const n of ns) {
+        if ((n.$type as string)?.includes("TaskNode") && n.Task === args.taskName) {
+          affectedProcessNodes.push(`${p.Name}/${n.StepName ?? "(unnamed)"}`);
+        }
+      }
+    }
+  }
+
+  if (changes.length === 0) {
+    return {
+      dryRun: !args.apply,
+      applied: false,
+      taskName: args.taskName,
+      before,
+      changes: [],
+      affectedProcessNodes: [],
+      message: "変更なし（指定値が現状と同じ or 何も指定されていない）",
+    };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    const ts = (beh.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+    const t = ts.find((x) => x.Name === args.taskName);
+    if (!t) throw new Error(`Task '${args.taskName}' がリトライ時に見つかりません`);
+
+    if (args.scriptId !== undefined) t.ScriptId = args.scriptId;
+    if (args.functionName !== undefined) t.FunctionName = args.functionName;
+    if (args.functionArguments !== undefined) {
+      t.FunctionArguments = args.functionArguments.map((a) => ({ Name: a.name, Expression: normalizeFormula(a.expression) }));
+    }
+    if (args.tableName !== undefined) t.TableName = args.tableName;
+    if (args.asyncExec !== undefined) t.AsyncExec = args.asyncExec;
+    if (args.forEntireTable !== undefined) t.ForEntireTable = args.forEntireTable;
+
+    if (args.newName !== undefined && args.newName !== args.taskName) {
+      t.Name = args.newName;
+      // 全 Process の TaskNode 参照を更新
+      const ps = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+      for (const p of ps) {
+        const ns = (p.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+        for (const n of ns) {
+          if ((n.$type as string)?.includes("TaskNode") && n.Task === args.taskName) {
+            n.Task = args.newName;
+          }
+        }
+      }
+    }
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      taskName: args.taskName,
+      before,
+      changes,
+      affectedProcessNodes,
+      message: `dry-run。Task '${args.taskName}' を更新 (${changes.length} 件)${affectedProcessNodes.length ? ` + ${affectedProcessNodes.length} 個の TaskNode 参照も更新` : ""}。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const lookupName = args.newName ?? args.taskName;
+  const refreshedTask = refreshedTasks?.find((t) => t.Name === lookupName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  let after: typeof before | undefined;
+  if (refreshedTask) {
+    after = {
+      name: refreshedTask.Name as string,
+      scriptId: refreshedTask.ScriptId,
+      functionName: refreshedTask.FunctionName,
+      functionArguments: refreshedTask.FunctionArguments,
+      tableName: refreshedTask.TableName,
+      asyncExec: refreshedTask.AsyncExec,
+      forEntireTable: refreshedTask.ForEntireTable,
+    };
+  }
+
+  return {
+    dryRun: false,
+    applied: !!refreshedTask,
+    taskName: lookupName,
+    before,
+    after,
+    changes,
+    affectedProcessNodes,
+    message: refreshedTask
+      ? `✅ AppsScript Task '${lookupName}' 更新完了 (${changes.length} 件)${affectedProcessNodes.length ? ` + ${affectedProcessNodes.length} 個の TaskNode 参照も更新` : ""}`
+      : `⚠️ saveapp Success だが事後検証で Task 不在`,
+  };
+}
+
+// MCP 経由で string[] 引数が string 1 本で届くケースに対応するヘルパ。
+// JSON 配列文字列・CSV・改行区切り のいずれも受け付ける。
+function coerceStringArray(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value !== "string") return [];
+  const trimmed = value.trim();
+  if (trimmed === "") return [];
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed.map(String);
+    } catch {
+      // JSON parse 失敗時は CSV にフォールバック
+    }
+  }
+  return trimmed.split(/[,\n]+/).map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+// ===== addSendEmailTask =====
+// Email Task ($type=AppWorkflowActionEmail) を Behavior.Tasks に追加し、
+// Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Email) を append
+export async function addSendEmailTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  tableName: string;
+  toList?: string[];
+  ccList?: string[];
+  bccList?: string[];
+  fromAddress?: string;
+  fromDisplay?: string;
+  replyTo?: string;
+  preHeader?: string;
+  subject: string;
+  body?: string;
+  emailType?: "CustomTemplate" | "AppDefault";
+  bodyTemplate?: string | null;
+  attachmentTemplate?: string | null;
+  attachmentName?: string | null;
+  attachmentContentType?: "PDF" | "DOCX" | "XLSX" | "HTML" | "CSV";
+  useDefaultContent?: boolean;
+  forEntireTable?: boolean;
+  stepName?: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; taskName: string; processName: string; componentIds?: { task: string; node: string }; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+
+  if (tasks.find((t) => t.Name === args.taskName)) throw new Error(`Task '${args.taskName}' は既に存在します`);
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const stepName = args.stepName ?? args.taskName;
+  // MCP 経由で string[] が string で届くケースにも対応 (JSON 配列文字列 / CSV / 改行区切り)
+  const toList = coerceStringArray(args.toList);
+  const ccList = coerceStringArray(args.ccList);
+  const bccList = coerceStringArray(args.bccList);
+
+  const newTask: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.AppWorkflowActionEmail, Jeenee.DataTypes",
+    ExprLookup: {},
+    To: "",
+    ToList: toList,
+    CC: "",
+    CCList: ccList,
+    BCC: "",
+    BCCList: bccList,
+    ReplyTo: args.replyTo ?? null,
+    FromAddress: args.fromAddress ?? "",
+    FromDisplay: args.fromDisplay ?? null,
+    PreHeader: args.preHeader ?? null,
+    Subject: args.subject,
+    Body: args.body ?? "",
+    BodyTemplate: args.bodyTemplate ?? null,
+    Footer: null,
+    BodyTemplateDataSourceName: null,
+    AttachmentContentType: args.attachmentContentType ?? "PDF",
+    AttachmentTemplate: args.attachmentTemplate ?? null,
+    AttachmentTemplateDataSourceName: null,
+    AttachmentName: args.attachmentName ?? null,
+    AttachmentArchive: "NotSpecified",
+    AttachmentFileStore: "_Default",
+    AttachmentFolderPath: "",
+    DisableTimestampSuffix: false,
+    AttachmentPageOrientation: "NotSpecified",
+    AttachmentPageSize: "NotSpecified",
+    AttachmentPageHeight: 0,
+    AttachmentPageWidth: 0,
+    UseCustomMargins: false,
+    AttachmentPageMarginTop: 0,
+    AttachmentPageMarginRight: 0,
+    AttachmentPageMarginBottom: 0,
+    AttachmentPageMarginLeft: 0,
+    OtherAttachments: null,
+    OtherAttachmentList: [],
+    ViewName: "None",
+    EmailType: args.emailType ?? "CustomTemplate",
+    MessageChannelName: "System Default",
+    UseDefaultContent: args.useDefaultContent ?? false,
+    Name: args.taskName,
+    Type: "Email",
+    IsAiTask: false,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? true,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "App owner",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: 4,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  };
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: "Email",
+    StepName: stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(newTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false, taskName: args.taskName, processName: args.processName,
+      message: `dry-run。Email Task '${args.taskName}' (To: ${toList.join(',')}) と Process '${args.processName}' への TaskNode を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !!created, taskName: args.taskName, processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created ? `✅ Email Task '${args.taskName}' 作成 + Process '${args.processName}' 連結完了` : `⚠️ saveapp Success だが事後検証で Task 不在`,
+  };
+}
+
+// ===== addWebhookTask =====
+// Webhook Task ($type=AppWorkflowActionWebhook) を Behavior.Tasks に追加し、
+// Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Webhook) を append
+export async function addWebhookTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  tableName: string;
+  url: string;
+  preset?: "Custom" | "Slack Hook" | "AppSheet API";
+  verb?: "Get" | "Post" | "Put" | "Delete" | "Patch";
+  contentType?: "JSON" | "XML" | "FormUrlEncoded";
+  body?: string;
+  bodyTemplate?: string | null;
+  headers?: Array<{ name: string; value: string }>;
+  timeoutSeconds?: number;
+  maxRetryCount?: number;
+  asyncExec?: boolean;
+  forEntireTable?: boolean;
+  stepName?: string;
+  targetAppId?: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; taskName: string; processName: string; componentIds?: { task: string; node: string }; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+
+  if (tasks.find((t) => t.Name === args.taskName)) throw new Error(`Task '${args.taskName}' は既に存在します`);
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const stepName = args.stepName ?? args.taskName;
+  // HeaderList は "Name: Value" 形式の文字列配列 (HAR 観察で判明)
+  const headerList = (args.headers ?? []).map((h) => `${h.name}: ${h.value}`);
+
+  const outputSchema = {
+    ExprLookup: {},
+    Name: "Webhook Output Schema",
+    Attributes: [],
+    AutoSchemaFrom: null,
+    IsAutoCreated: false,
+    IsDependent: false,
+    CreatedBy: null,
+    AutomationPurpose: 0,
+    IsValid: true,
+    Visibility: "NEVER",
+    DisableAutoUpdate: false,
+    ComponentId: null,
+    _index: 0,
+    _path: `Behavior.Tasks[${tasks.length}].OutputSchema`,
+  };
+
+  const newTask: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.AppWorkflowActionWebhook, Jeenee.DataTypes",
+    ExprLookup: {},
+    Preset: args.preset ?? "Custom",
+    Url: args.url,
+    Verb: args.verb ?? "Post",
+    AppId: args.targetAppId ?? null,
+    Headers: null,
+    HeaderList: headerList,
+    ContentType: args.contentType ?? "JSON",
+    Body: args.body ?? "",
+    BodyTemplate: args.bodyTemplate ?? null,
+    BodyTemplateDataSourceName: null,
+    ScriptId: null,
+    AppscriptChannel: 0,
+    AppscriptFunction: null,
+    AppscriptFunctionParameterList: [],
+    TimeoutSeconds: args.timeoutSeconds ?? 180,
+    MaxRetryCount: args.maxRetryCount ?? 3,
+    OutputSchema: outputSchema,
+    AsyncExec: args.asyncExec ?? false,
+    OutputWebhookType: "Null",
+    Name: args.taskName,
+    Type: "Webhook",
+    IsAiTask: false,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? true,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "App owner",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: 15,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  };
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: "Webhook",
+    StepName: stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(newTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false, taskName: args.taskName, processName: args.processName,
+      message: `dry-run。Webhook Task '${args.taskName}' (${args.verb ?? 'Post'} ${args.url}) と Process '${args.processName}' への TaskNode を構築。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !!created, taskName: args.taskName, processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created ? `✅ Webhook Task '${args.taskName}' 作成 + Process '${args.processName}' 連結完了` : `⚠️ saveapp Success だが事後検証で Task 不在`,
+  };
+}
+
+// ===== addBranchStep =====
+// Branch Step ($type=ProcessNodes.IfElseNode) を Process.Nodes に append
+// Task entry は不要 (IfNodes/ElseNodes 配下で別途 Task を追加する想定)
+export async function addBranchStep(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  stepName: string;
+  condition: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; processName: string; stepName: string; componentId?: string; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+
+  const componentId = generateComponentId();
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.IfElseNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    Condition: normalizeFormula(args.condition),
+    IfNodes: [],
+    ElseNodes: [],
+    NodeType: "IF_ELSE",
+    StepName: args.stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: componentId,
+  };
+
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false, processName: args.processName, stepName: args.stepName,
+      message: `dry-run。Branch Step '${args.stepName}' (Condition: ${args.condition}) を Process '${args.processName}' に追加。apply: true で送信。子 Step は IfNodes/ElseNodes に別途追加が必要。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedProcs = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppProcesses as Array<Record<string, unknown>> | undefined;
+  const refreshedProc = refreshedProcs?.find((p) => p.Name === args.processName);
+  const created = (refreshedProc?.Nodes as Array<Record<string, unknown>> | undefined)?.find((n) => (n.ComponentId as string) === componentId);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !!created, processName: args.processName, stepName: args.stepName,
+    componentId,
+    message: created ? `✅ Branch Step '${args.stepName}' を Process '${args.processName}' に追加完了` : `⚠️ saveapp Success だが事後検証で Branch Step 不在`,
+  };
+}
+
+// ===== removeStep =====
+// Process.Nodes から指定 Step を削除する。
+// TaskNode の場合、対応する Behavior.Tasks エントリも他に参照されていなければ削除。
+// IfNodes / ElseNodes 配下の子 Step は (現在は) 同階層のみ検索 (深い再帰は将来対応)。
+export async function removeStep(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  stepName?: string;        // StepName による削除 (推奨・デフォルト)
+  componentId?: string;     // ComponentId による削除 (重複名がある場合)
+  removeOrphanedTask?: boolean;  // true で TaskNode 削除時に紐づく Task も削除 (default true)
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  processName: string;
+  removedStep?: { stepName: string; nodeType: string; componentId: string; linkedTask?: string };
+  removedTask?: string;
+  message: string;
+}> {
+  if (!args.stepName && !args.componentId) {
+    throw new Error("stepName か componentId のいずれかを指定してください");
+  }
+
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+
+  const nodes = (targetProcess.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  const idx = nodes.findIndex((n) => {
+    if (args.componentId) return n.ComponentId === args.componentId;
+    return n.StepName === args.stepName;
+  });
+  if (idx < 0) {
+    const knownSteps = nodes.map((n) => `${n.StepName}(${(n.$type as string)?.split(',')[0]?.split('.').pop()})`).join(", ");
+    throw new Error(`Step '${args.stepName ?? args.componentId}' が見つかりません。Process Nodes: ${knownSteps}`);
+  }
+
+  const removingNode = nodes[idx];
+  const nodeType = ((removingNode.$type as string)?.split(',')[0]?.split('.').pop()) ?? "Unknown";
+  const removingComponentId = removingNode.ComponentId as string;
+  const linkedTaskName = (nodeType === "TaskNode") ? (removingNode.Task as string) : undefined;
+
+  // Tasks の他参照があるか調査
+  let removeOrphanedTask = false;
+  if (linkedTaskName && (args.removeOrphanedTask ?? true)) {
+    // 全 Process の全 Nodes から TaskNode で linkedTaskName を参照しているもの (自分以外) を探す
+    let otherRefCount = 0;
+    for (const p of processes) {
+      const ns = (p.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+      for (const n of ns) {
+        if (n === removingNode) continue;
+        if ((n.$type as string)?.includes("TaskNode") && n.Task === linkedTaskName) otherRefCount++;
+      }
+    }
+    if (otherRefCount === 0) removeOrphanedTask = true;
+  }
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    const procs = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+    const tp = procs.find((p) => p.Name === args.processName);
+    if (!tp) throw new Error(`Process '${args.processName}' が見つかりません（リトライ時）`);
+    const ns = (tp.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+    const i = ns.findIndex((n) => n.ComponentId === removingComponentId);
+    if (i >= 0) ns.splice(i, 1);
+    if (removeOrphanedTask && linkedTaskName) {
+      const ts = (beh.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+      const ti = ts.findIndex((t) => t.Name === linkedTaskName);
+      if (ti >= 0) ts.splice(ti, 1);
+    }
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false, processName: args.processName,
+      removedStep: { stepName: (removingNode.StepName as string) ?? "(unnamed)", nodeType, componentId: removingComponentId, linkedTask: linkedTaskName },
+      removedTask: removeOrphanedTask ? linkedTaskName : undefined,
+      message: `dry-run。Step '${removingNode.StepName ?? args.stepName}' (${nodeType}) を削除${removeOrphanedTask ? ` + Task '${linkedTaskName}' も削除` : ''}。apply: true で送信。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedProcs = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppProcesses as Array<Record<string, unknown>> | undefined;
+  const refreshedProc = refreshedProcs?.find((p) => p.Name === args.processName);
+  const stillThere = (refreshedProc?.Nodes as Array<Record<string, unknown>> | undefined)?.find((n) => n.ComponentId === removingComponentId);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !stillThere, processName: args.processName,
+    removedStep: { stepName: (removingNode.StepName as string) ?? "(unnamed)", nodeType, componentId: removingComponentId, linkedTask: linkedTaskName },
+    removedTask: removeOrphanedTask ? linkedTaskName : undefined,
+    message: !stillThere
+      ? `✅ Step 削除完了${removeOrphanedTask ? ` (Task '${linkedTaskName}' も削除)` : ''}`
+      : `⚠️ saveapp Success だが Step が残存`,
+  };
+}
+
+// ===== moveStep =====
+// Process.Nodes 配列内で Step を任意位置に移動する。
+// IfNodes/ElseNodes 配下のネストした step は範囲外 (現行は同階層のみ)。
+export async function moveStep(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  stepName?: string;       // 識別子: 推奨
+  componentId?: string;    // 同名 step がある場合に使用
+  toIndex: number;         // 移動先 index (0 始まり、Process.Nodes の長さ未満)
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  processName: string;
+  stepName?: string;
+  fromIndex: number;
+  toIndex: number;
+  order: { before: string[]; after?: string[] };
+  message: string;
+}> {
+  if (!args.stepName && !args.componentId) {
+    throw new Error("stepName か componentId のいずれかを指定してください");
+  }
+  if (typeof args.toIndex !== "number" || args.toIndex < 0 || !Number.isInteger(args.toIndex)) {
+    throw new Error("toIndex は 0 以上の整数を指定してください");
+  }
+
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+
+  const nodes = (targetProcess.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  const fromIndex = nodes.findIndex((n) => {
+    if (args.componentId) return n.ComponentId === args.componentId;
+    return n.StepName === args.stepName;
+  });
+  if (fromIndex < 0) {
+    const knownSteps = nodes.map((n) => n.StepName as string ?? "(unnamed)").join(", ");
+    throw new Error(`Step '${args.stepName ?? args.componentId}' が見つかりません。Process Nodes: ${knownSteps}`);
+  }
+  if (args.toIndex >= nodes.length) {
+    throw new Error(`toIndex ${args.toIndex} は Process.Nodes の長さ ${nodes.length} を超えています (最大: ${nodes.length - 1})`);
+  }
+  const targetStepName = (nodes[fromIndex].StepName as string) ?? "(unnamed)";
+
+  const orderBefore = nodes.map((n) => (n.StepName as string) ?? "(unnamed)");
+
+  if (fromIndex === args.toIndex) {
+    return {
+      dryRun: !args.apply, applied: false, processName: args.processName, stepName: targetStepName,
+      fromIndex, toIndex: args.toIndex,
+      order: { before: orderBefore },
+      message: `Step '${targetStepName}' は既に index ${args.toIndex} にあります (変更なし)`,
+    };
+  }
+
+  const movingComponentId = nodes[fromIndex].ComponentId as string;
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    const procs = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+    const tp = procs.find((p) => p.Name === args.processName);
+    if (!tp) throw new Error(`Process '${args.processName}' が見つかりません（リトライ時）`);
+    const ns = (tp.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+    const i = ns.findIndex((n) => n.ComponentId === movingComponentId);
+    if (i < 0) throw new Error(`Step がリトライ時に見つかりません`);
+    const [moved] = ns.splice(i, 1);
+    ns.splice(args.toIndex, 0, moved);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    const refreshedNodes = (targetProcess.Nodes as Array<Record<string, unknown>>) ?? [];
+    const orderAfter = refreshedNodes.map((n) => (n.StepName as string) ?? "(unnamed)");
+    return {
+      dryRun: true, applied: false, processName: args.processName, stepName: targetStepName,
+      fromIndex, toIndex: args.toIndex,
+      order: { before: orderBefore, after: orderAfter },
+      message: `dry-run。Step '${targetStepName}' を index ${fromIndex} → ${args.toIndex} に移動。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedProcs = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppProcesses as Array<Record<string, unknown>> | undefined;
+  const refreshedProc = refreshedProcs?.find((p) => p.Name === args.processName);
+  const refreshedNodes = (refreshedProc?.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  const orderAfter = refreshedNodes.map((n) => (n.StepName as string) ?? "(unnamed)");
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: true, processName: args.processName, stepName: targetStepName,
+    fromIndex, toIndex: args.toIndex,
+    order: { before: orderBefore, after: orderAfter },
+    message: `✅ Step '${targetStepName}' 移動完了 (index ${fromIndex} → ${args.toIndex})`,
   };
 }
 
@@ -2766,6 +3586,428 @@ export async function createBot(args: {
   };
 }
 
+// ===== setBotTrigger =====
+// 既存 Bot の Event (Trigger) を編集する。
+// - eventType の切替 (DataChange ↔ Scheduled)
+// - DataChange 系: ChangeEvent 種別 (ADDS_ONLY 等) と filterCondition の編集
+// - Scheduled: cron / timeZone / forEachRowInTable / filterCondition / table の編集
+// - bot.Disabled の切替
+export async function setBotTrigger(args: {
+  appId?: string;
+  appName?: string;
+  botName: string;
+  // 切替後の eventType。省略時は現状維持。
+  eventType?: "ADDS_ONLY" | "UPDATES_ONLY" | "DELETES_ONLY" | "ADDS_AND_UPDATES" | "ADDS_UPDATES_DELETES" | "Scheduled";
+  // null クリアは許容しない (AppSheet 側 NULL 不可)。空文字 or 省略時は変更なし。
+  filterCondition?: string;
+  // DataChange の SchemaName 解決 / Scheduled の Table 切替に使用。省略時は現状維持。
+  tableName?: string;
+  // Scheduled の場合のみ部分更新 (eventType=Scheduled or 既に Schedule の場合)
+  scheduleConfig?: {
+    cron?: string;
+    timeZone?: string;
+    forEachRowInTable?: boolean;
+    region?: string;
+  };
+  // Bot の有効/無効を切替
+  disabled?: boolean;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  botName: string;
+  eventName: string;
+  before: { eventType: string; subType?: string; filterCondition: unknown; table?: string; schedule?: { cron?: string; timeZone?: string; forEachRowInTable?: boolean; region?: string }; disabled: boolean };
+  after?: { eventType: string; subType?: string; filterCondition: unknown; table?: string; schedule?: { cron?: string; timeZone?: string; forEachRowInTable?: boolean; region?: string }; disabled: boolean };
+  changes: string[];
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+
+  const bots = (behavior.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+  const events = (behavior.AppEvents as Array<Record<string, unknown>> | undefined) ?? [];
+
+  const targetBot = bots.find((b) => b.Name === args.botName);
+  if (!targetBot) {
+    const known = bots.map((b) => b.Name as string).join(", ");
+    throw new Error(`Bot '${args.botName}' が見つかりません。既知: ${known}`);
+  }
+
+  const eventName = targetBot.EventName as string;
+  if (!eventName) throw new Error(`Bot '${args.botName}' に EventName がありません`);
+
+  const targetEvent = events.find((e) => e.Name === eventName);
+  if (!targetEvent) throw new Error(`Event '${eventName}' が見つかりません (Bot '${args.botName}' から参照)`);
+
+  const eventDef = targetEvent.AppEventDefinition as Record<string, unknown> | undefined;
+  if (!eventDef) throw new Error(`Event '${eventName}' に AppEventDefinition がありません`);
+
+  // 現状読み取り
+  const currentOuterType = (targetEvent.EventType as string) ?? "Change"; // "Change" or "Scheduled"
+  const currentIsSchedule = currentOuterType === "Scheduled";
+  const currentChangeEvent = !currentIsSchedule ? (eventDef.ChangeEvent as string | undefined) : undefined;
+  const currentSchemaName = !currentIsSchedule ? (eventDef.SchemaName as string | undefined) : undefined;
+  const currentScheduleTable = currentIsSchedule ? (eventDef.Table as string | undefined) : undefined;
+  const currentSchedule = currentIsSchedule
+    ? {
+        cron: eventDef.Schedule as string | undefined,
+        timeZone: eventDef.TimeZone as string | undefined,
+        forEachRowInTable: eventDef.ForEachRowInTable as boolean | undefined,
+        region: eventDef.Region as string | undefined,
+      }
+    : undefined;
+  const currentFilterCondition = currentIsSchedule
+    ? (eventDef.FilterCondition as string | undefined)
+    : (targetEvent.FilterCondition as string | undefined);
+
+  // 目的の eventType 決定
+  const requestedEventType = args.eventType;
+  const targetIsSchedule = requestedEventType === "Scheduled" ? true : (requestedEventType ? false : currentIsSchedule);
+  const isTypeSwitch = currentIsSchedule !== targetIsSchedule;
+
+  // バリデーション
+  if (targetIsSchedule && isTypeSwitch && !args.scheduleConfig?.cron) {
+    throw new Error("DataChange → Scheduled へ切替時は scheduleConfig.cron が必須");
+  }
+  if (!targetIsSchedule && isTypeSwitch && !requestedEventType) {
+    throw new Error("Scheduled → DataChange へ切替時は eventType (ADDS_ONLY 等) が必須");
+  }
+
+  // DataChange の SchemaName 解決 (type 切替 or table 変更時)
+  let resolvedSchemaName: string | undefined = currentSchemaName;
+  if (!targetIsSchedule && (isTypeSwitch || args.tableName)) {
+    const table = args.tableName ?? currentScheduleTable; // Schedule から切替時は元 Table を流用
+    if (!table) throw new Error("DataChange の対象テーブルを解決できません。tableName を指定してください");
+    const schemas = app.AppData?.DataSchemas ?? [];
+    const schema =
+      schemas.find((s) => s.AutoSchemaFrom === table) ??
+      schemas.find((s) => s.Name === `${table}_Schema`) ??
+      schemas.find((s) => s.Name === table);
+    if (!schema) throw new Error(`テーブル '${table}' の Schema が見つかりません`);
+    resolvedSchemaName = schema.Name;
+  }
+
+  // before スナップショット
+  const before = {
+    eventType: currentIsSchedule ? "Scheduled" : "Change",
+    subType: currentIsSchedule ? undefined : currentChangeEvent,
+    filterCondition: currentFilterCondition,
+    table: currentIsSchedule ? currentScheduleTable : (currentSchemaName ? schemaTable(app, currentSchemaName) : undefined),
+    schedule: currentSchedule,
+    disabled: (targetBot.Disabled as boolean) ?? false,
+  };
+
+  // 変更検出
+  const changes: string[] = [];
+  if (isTypeSwitch) changes.push(`EventType: ${before.eventType} → ${targetIsSchedule ? "Scheduled" : "Change"}`);
+  if (!targetIsSchedule && requestedEventType && requestedEventType !== currentChangeEvent) {
+    changes.push(`ChangeEvent: ${currentChangeEvent ?? "(none)"} → ${requestedEventType}`);
+  }
+  if (args.filterCondition !== undefined && args.filterCondition !== "") {
+    const newFc = normalizeFormula(args.filterCondition);
+    if (newFc !== currentFilterCondition) changes.push(`FilterCondition: ${currentFilterCondition ?? "(none)"} → ${newFc}`);
+  }
+  if (targetIsSchedule && args.scheduleConfig) {
+    const sc = args.scheduleConfig;
+    if (sc.cron !== undefined && sc.cron !== currentSchedule?.cron) changes.push(`Schedule(cron): ${currentSchedule?.cron ?? "(none)"} → ${sc.cron}`);
+    if (sc.timeZone !== undefined && sc.timeZone !== currentSchedule?.timeZone) changes.push(`TimeZone: ${currentSchedule?.timeZone ?? "(none)"} → ${sc.timeZone}`);
+    if (sc.forEachRowInTable !== undefined && sc.forEachRowInTable !== currentSchedule?.forEachRowInTable) changes.push(`ForEachRowInTable: ${currentSchedule?.forEachRowInTable} → ${sc.forEachRowInTable}`);
+    if (sc.region !== undefined && sc.region !== currentSchedule?.region) changes.push(`Region: ${currentSchedule?.region ?? "(none)"} → ${sc.region}`);
+  }
+  if (targetIsSchedule && args.tableName && args.tableName !== currentScheduleTable) {
+    changes.push(`Table: ${currentScheduleTable ?? "(none)"} → ${args.tableName}`);
+  }
+  if (!targetIsSchedule && args.tableName && resolvedSchemaName !== currentSchemaName) {
+    changes.push(`SchemaName: ${currentSchemaName ?? "(none)"} → ${resolvedSchemaName}`);
+  }
+  if (args.disabled !== undefined && args.disabled !== before.disabled) {
+    changes.push(`Disabled: ${before.disabled} → ${args.disabled}`);
+  }
+
+  if (changes.length === 0) {
+    return {
+      dryRun: !args.apply,
+      applied: false,
+      botName: args.botName,
+      eventName,
+      before,
+      changes: [],
+      message: "変更なし（指定値が現状と同じ or 何も指定されていない）",
+    };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    const bs = (beh.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+    const es = (beh.AppEvents as Array<Record<string, unknown>> | undefined) ?? [];
+    const tBot = bs.find((b) => b.Name === args.botName);
+    const tEvent = es.find((e) => e.Name === eventName);
+    if (!tBot || !tEvent) throw new Error("Bot/Event がリトライ時に見つかりません");
+    const tEventDef = tEvent.AppEventDefinition as Record<string, unknown> | undefined;
+    if (!tEventDef) throw new Error("AppEventDefinition がリトライ時に見つかりません");
+
+    // bot.Disabled
+    if (args.disabled !== undefined) tBot.Disabled = args.disabled;
+
+    if (isTypeSwitch && targetIsSchedule) {
+      // DataChange → Scheduled: AppEventDefinition を完全に作り直し
+      const sc = args.scheduleConfig!;
+      const tableForSchedule = args.tableName ?? schemaTable(a, currentSchemaName ?? "") ?? "";
+      const newDef: Record<string, unknown> = {
+        $type: "Jeenee.DataTypes.AppScheduledEventDefinition, Jeenee.DataTypes",
+        ExprLookup: {},
+        RecurrentRuleName: null,
+        Schedule: sc.cron,
+        TimeZone: sc.timeZone ?? "Tokyo Standard Time",
+        Table: tableForSchedule,
+        FilterCondition: args.filterCondition ? normalizeFormula(args.filterCondition) : "true",
+        ForEachRowInTable: sc.forEachRowInTable ?? true,
+        Region: sc.region ?? "",
+        IsValid: true,
+        Visibility: "ALWAYS",
+        DisableAutoUpdate: false,
+        ComponentId: tEventDef.ComponentId, // 既存 ComponentId を継承
+      };
+      tEvent.AppEventDefinition = newDef;
+      tEvent.EventType = "Scheduled";
+      tEvent.FilterCondition = null; // outer は Schedule では null
+      tEvent._version = 7;
+    } else if (isTypeSwitch && !targetIsSchedule) {
+      // Scheduled → DataChange: AppEventDefinition を完全に作り直し
+      const newDef: Record<string, unknown> = {
+        $type: "Jeenee.DataTypes.AppChangeEventDefinition, Jeenee.DataTypes",
+        ExprLookup: {},
+        ChangeEvent: requestedEventType!,
+        SchemaName: resolvedSchemaName!,
+        IsValid: true,
+        Visibility: "ALWAYS",
+        DisableAutoUpdate: false,
+        ComponentId: tEventDef.ComponentId,
+      };
+      tEvent.AppEventDefinition = newDef;
+      tEvent.EventType = "Change";
+      tEvent.FilterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : "=TRUE";
+      tEvent._version = 6;
+    } else if (targetIsSchedule) {
+      // Scheduled の部分更新
+      if (args.scheduleConfig?.cron !== undefined) tEventDef.Schedule = args.scheduleConfig.cron;
+      if (args.scheduleConfig?.timeZone !== undefined) tEventDef.TimeZone = args.scheduleConfig.timeZone;
+      if (args.scheduleConfig?.forEachRowInTable !== undefined) tEventDef.ForEachRowInTable = args.scheduleConfig.forEachRowInTable;
+      if (args.scheduleConfig?.region !== undefined) tEventDef.Region = args.scheduleConfig.region;
+      if (args.tableName !== undefined) tEventDef.Table = args.tableName;
+      if (args.filterCondition !== undefined && args.filterCondition !== "") {
+        tEventDef.FilterCondition = normalizeFormula(args.filterCondition);
+      }
+    } else {
+      // DataChange の部分更新
+      if (requestedEventType && requestedEventType !== "Scheduled") tEventDef.ChangeEvent = requestedEventType;
+      if (args.tableName !== undefined && resolvedSchemaName) tEventDef.SchemaName = resolvedSchemaName;
+      if (args.filterCondition !== undefined && args.filterCondition !== "") {
+        tEvent.FilterCondition = normalizeFormula(args.filterCondition);
+      }
+    }
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      botName: args.botName,
+      eventName,
+      before,
+      changes,
+      message: `dry-run。Bot '${args.botName}' の Trigger を更新 (${changes.length} 件)。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedBeh = (refreshed as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  const refreshedBots = (refreshedBeh?.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+  const refreshedEvents = (refreshedBeh?.AppEvents as Array<Record<string, unknown>> | undefined) ?? [];
+  const refreshedBot = refreshedBots.find((b) => b.Name === args.botName);
+  const refreshedEvent = refreshedEvents.find((e) => e.Name === eventName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  let after: typeof before | undefined;
+  if (refreshedEvent) {
+    const rDef = refreshedEvent.AppEventDefinition as Record<string, unknown> | undefined;
+    const rIsSchedule = (refreshedEvent.EventType as string) === "Scheduled";
+    after = {
+      eventType: rIsSchedule ? "Scheduled" : "Change",
+      subType: rIsSchedule ? undefined : (rDef?.ChangeEvent as string | undefined),
+      filterCondition: rIsSchedule ? (rDef?.FilterCondition as string | undefined) : (refreshedEvent.FilterCondition as string | undefined),
+      table: rIsSchedule
+        ? (rDef?.Table as string | undefined)
+        : (rDef?.SchemaName ? schemaTable(refreshed, rDef.SchemaName as string) : undefined),
+      schedule: rIsSchedule
+        ? {
+            cron: rDef?.Schedule as string | undefined,
+            timeZone: rDef?.TimeZone as string | undefined,
+            forEachRowInTable: rDef?.ForEachRowInTable as boolean | undefined,
+            region: rDef?.Region as string | undefined,
+          }
+        : undefined,
+      disabled: (refreshedBot?.Disabled as boolean) ?? false,
+    };
+  }
+
+  return {
+    dryRun: false,
+    applied: true,
+    botName: args.botName,
+    eventName,
+    before,
+    after,
+    changes,
+    message: `✅ Bot '${args.botName}' の Trigger 更新完了 (${changes.length} 件)`,
+  };
+}
+
+// AppEvent の SchemaName から元テーブル名を逆引きするヘルパ
+function schemaTable(app: AppDef, schemaName: string): string | undefined {
+  const schemas = app.AppData?.DataSchemas ?? [];
+  const s = schemas.find((s) => s.Name === schemaName);
+  return s?.AutoSchemaFrom ?? undefined;
+}
+
+// ===== setBotOptions =====
+// Bot のメタ情報のみ編集 (Trigger は触らない)。
+// - newName: Bot 改名 (Bot.Name と Event/Process 経由の参照は EventName/ProcessName のままなので影響なし)
+// - icon: Material Icons / FontAwesome 名
+// - comment: Bot に紐付くコメント
+// - disabled: 有効/無効 (set_bot_trigger と被るが、Trigger 編集なしで切替えたい時に便利)
+export async function setBotOptions(args: {
+  appId?: string;
+  appName?: string;
+  botName: string;
+  newName?: string;
+  icon?: string | null;
+  comment?: string | null;
+  disabled?: boolean;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  botName: string;
+  before: { name: string; icon: unknown; comment: unknown; disabled: boolean };
+  after?: { name: string; icon: unknown; comment: unknown; disabled: boolean };
+  changes: string[];
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const bots = (behavior.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+
+  const targetBot = bots.find((b) => b.Name === args.botName);
+  if (!targetBot) {
+    const known = bots.map((b) => b.Name as string).join(", ");
+    throw new Error(`Bot '${args.botName}' が見つかりません。既知: ${known}`);
+  }
+
+  // 改名先重複チェック
+  if (args.newName !== undefined && args.newName !== args.botName) {
+    if (bots.find((b) => b.Name === args.newName)) {
+      throw new Error(`改名先 Bot '${args.newName}' は既に存在します`);
+    }
+  }
+
+  const before = {
+    name: targetBot.Name as string,
+    icon: targetBot.Icon,
+    comment: targetBot.Comment,
+    disabled: (targetBot.Disabled as boolean) ?? false,
+  };
+
+  const changes: string[] = [];
+  if (args.newName !== undefined && args.newName !== before.name) {
+    changes.push(`Name: ${before.name} → ${args.newName}`);
+  }
+  if (args.icon !== undefined && args.icon !== before.icon) {
+    changes.push(`Icon: ${before.icon ?? "(none)"} → ${args.icon ?? "(null)"}`);
+  }
+  if (args.comment !== undefined && args.comment !== before.comment) {
+    changes.push(`Comment: ${before.comment ?? "(none)"} → ${args.comment ?? "(null)"}`);
+  }
+  if (args.disabled !== undefined && args.disabled !== before.disabled) {
+    changes.push(`Disabled: ${before.disabled} → ${args.disabled}`);
+  }
+
+  if (changes.length === 0) {
+    return {
+      dryRun: !args.apply,
+      applied: false,
+      botName: args.botName,
+      before,
+      changes: [],
+      message: "変更なし（指定値が現状と同じ or 何も指定されていない）",
+    };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    const bs = (beh.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+    const t = bs.find((b) => b.Name === args.botName);
+    if (!t) throw new Error(`Bot '${args.botName}' がリトライ時に見つかりません`);
+
+    if (args.newName !== undefined) t.Name = args.newName;
+    if (args.icon !== undefined) t.Icon = args.icon;
+    if (args.comment !== undefined) t.Comment = args.comment;
+    if (args.disabled !== undefined) t.Disabled = args.disabled;
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      botName: args.botName,
+      before,
+      changes,
+      message: `dry-run。Bot '${args.botName}' を更新 (${changes.length} 件)。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedBots = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppBots as Array<Record<string, unknown>> | undefined;
+  const lookupName = args.newName ?? args.botName;
+  const refreshedBot = refreshedBots?.find((b) => b.Name === lookupName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  let after: typeof before | undefined;
+  if (refreshedBot) {
+    after = {
+      name: refreshedBot.Name as string,
+      icon: refreshedBot.Icon,
+      comment: refreshedBot.Comment,
+      disabled: (refreshedBot.Disabled as boolean) ?? false,
+    };
+  }
+
+  return {
+    dryRun: false,
+    applied: !!refreshedBot,
+    botName: lookupName,
+    before,
+    after,
+    changes,
+    message: refreshedBot
+      ? `✅ Bot '${lookupName}' 更新完了 (${changes.length} 件)`
+      : `⚠️ saveapp Success だが事後検証で Bot 不在`,
+  };
+}
+
 export async function addOpenUrlAction(args: {
   appId?: string;
   appName?: string;
@@ -2855,7 +4097,7 @@ export async function addOpenUrlAction(args: {
       Inputs: [],
       Name: args.actionName,
       DisplayName: null,
-      CreatedBy: "User",
+      CreatedBy: "App owner",
       Icon: icon,
       IconRunnerUps: null,
       Table: args.tableName,
@@ -3173,4 +4415,549 @@ export async function setSecurityFilter(args: {
     warning,
     message: after === newFilter ? "✅ Security Filter 更新完了" : `⚠️ 期待 '${newFilter}' だが現在 '${after}'。複雑式は再パースされない可能性。`,
   };
+}
+
+export async function setColumnYNLabels(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  yesLabel: string;
+  noLabel: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; table: string; column: string; before: { yes: string; no: string }; requested: { yes: string; no: string }; after?: { yes: string; no: string }; verified?: boolean; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const attr = findAttribute(app, args.tableName, args.columnName);
+  if (attr.Type !== "Yes/No") {
+    throw new Error(`列 '${args.columnName}' は Yes/No 型ではありません (Type=${attr.Type})`);
+  }
+  const auxRaw = (attr.TypeAuxData ?? "{}") as string;
+  let aux: Record<string, unknown>;
+  try { aux = JSON.parse(auxRaw); } catch { aux = {}; }
+  const before = { yes: (aux.YesLabel ?? "") as string, no: (aux.NoLabel ?? "") as string };
+
+  if (before.yes === args.yesLabel && before.no === args.noLabel) {
+    return { dryRun: !args.apply, applied: false, table: args.tableName, column: args.columnName, before, requested: { yes: args.yesLabel, no: args.noLabel }, message: "変更不要（既に同じ値）" };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const target = findAttribute(a, args.tableName, args.columnName);
+    const targetAuxRaw = (target.TypeAuxData ?? "{}") as string;
+    let targetAux: Record<string, unknown>;
+    try { targetAux = JSON.parse(targetAuxRaw); } catch { targetAux = {}; }
+    targetAux.YesLabel = args.yesLabel;
+    targetAux.NoLabel = args.noLabel;
+    target.TypeAuxData = JSON.stringify(targetAux);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, table: args.tableName, column: args.columnName, before, requested: { yes: args.yesLabel, no: args.noLabel }, message: "dry-run。apply: true で実際送信。" };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedAttr = findAttribute(refreshed, args.tableName, args.columnName);
+  const refreshedAuxRaw = (refreshedAttr.TypeAuxData ?? "{}") as string;
+  let refreshedAux: Record<string, unknown>;
+  try { refreshedAux = JSON.parse(refreshedAuxRaw); } catch { refreshedAux = {}; }
+  const after = { yes: (refreshedAux.YesLabel ?? "") as string, no: (refreshedAux.NoLabel ?? "") as string };
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return { dryRun: false, applied: true, table: args.tableName, column: args.columnName, before, requested: { yes: args.yesLabel, no: args.noLabel }, after, verified: after.yes === args.yesLabel && after.no === args.noLabel, message: "送信完了・スナップショット更新済み" };
+}
+
+export async function setViewDisplayMode(args: {
+  appId?: string;
+  appName?: string;
+  viewName: string;
+  displayMode: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; viewName: string; before: string | null; requested: string; after?: string | null; verified?: boolean; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const controls = ((app as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  if (!controls) throw new Error("Controls 不明");
+  const view = controls.find((c) => c.Name === args.viewName);
+  if (!view) throw new Error(`View '${args.viewName}' が見つかりません`);
+
+  const viewDef = view.ViewDefinition as Record<string, unknown> | undefined;
+  if (!viewDef) throw new Error(`View '${args.viewName}' に ViewDefinition がありません`);
+  const $type = (viewDef.$type ?? "") as string;
+  if (!$type.includes("SlideshowViewSettings")) {
+    throw new Error(`View '${args.viewName}' は detail view ではありません ($type=${$type})。displayMode は detail view のみ対応`);
+  }
+  const before = (viewDef.DisplayMode ?? null) as string | null;
+
+  if (before === args.displayMode) {
+    return { dryRun: !args.apply, applied: false, viewName: args.viewName, before, requested: args.displayMode, message: "変更不要（既に同じ値）" };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const ctrls = ((a as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+    const target = ctrls?.find((c) => c.Name === args.viewName);
+    if (!target) throw new Error(`View '${args.viewName}' が見つかりません（リトライ時）`);
+    const targetDef = target.ViewDefinition as Record<string, unknown>;
+    targetDef.DisplayMode = args.displayMode;
+    const settingsRaw = (target.Settings ?? "{}") as string;
+    let settings: Record<string, unknown>;
+    try { settings = JSON.parse(settingsRaw); } catch { settings = {}; }
+    settings.DisplayMode = args.displayMode;
+    target.Settings = JSON.stringify(settings);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, viewName: args.viewName, before, requested: args.displayMode, message: "dry-run。apply: true で実際送信。" };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedCtrls = ((refreshed as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  const refreshedView = refreshedCtrls?.find((c) => c.Name === args.viewName);
+  const after = ((refreshedView?.ViewDefinition as Record<string, unknown>)?.DisplayMode ?? null) as string | null;
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return { dryRun: false, applied: true, viewName: args.viewName, before, requested: args.displayMode, after, verified: after === args.displayMode, message: after === args.displayMode ? "✅ DisplayMode 更新完了" : `⚠️ 期待 '${args.displayMode}' だが現在 '${after}'。AppSheet 側で再正規化された可能性` };
+}
+
+// View Options camelCase → ViewDefinition PascalCase field 名 マッピング
+// create_view の buildViewDefinition と語彙を揃える。
+// 公式ドキュメント (support.google.com/appsheet) ベースの推測値含む。
+// 動作しない場合は HAR / appdef snapshot で実際の field 名を確認して修正。
+const VIEW_OPTION_FIELD_MAP: Record<string, string> = {
+  // ===== 共通 =====
+  icon: "Icon",
+  menuOrder: "MenuOrder",
+  groupBy: "GroupBy",
+  sortBy: "SortBy",
+  primarySortColumn: "PrimarySortColumn",
+  isPrimarySortDescending: "IsPrimarySortDescending",
+  groupAggregate: "GroupAggregate",  // table/deck/card/gallery 共通
+  events: "Events",                   // Behavior > Event actions (構造化配列)
+  eventActions: "EventActions",       // ※ events と同義の可能性あり (要検証)
+  attachedCards: "AttachedCards",     // detail 下部の関連ビュー (要検証)
+  slug: "Slug",                       // URL 識別子 (要検証)
+  badge: "Badge",                     // バッジ式 (要検証)
+  customStyle: "CustomStyle",         // カスタム CSS (要検証)
+
+  // ===== table =====
+  columnWidth: "ColumnWidth",
+  enableQuickEdit: "EnableQuickEdit",
+  columnOrder: "ColumnOrder",
+  showColumnHeaders: "ShowColumnHeaders",     // 列見出し表示
+  numericAlignment: "NumericAlignment",       // 数値の右寄せ等
+  columnHeaderStyle: "ColumnHeaderStyle",     // sticky / normal
+
+  // ===== card / deck =====
+  layout: "Layout",
+  mainDeckImageColumn: "MainDeckImageColumn",
+  imageShape: "ImageShape",
+  primaryDeckHeaderColumn: "PrimaryDeckHeaderColumn",
+  secondaryDeckHeaderColumn: "SecondaryDeckHeaderColumn",
+  deckSummaryColumn: "DeckSummaryColumn",
+  deckNestedTableColumn: "DeckNestedTableColumn",
+  showActionBar: "ShowActionBar",
+  imageFit: "ImageFit",                       // Cover / Fit / Fill
+  actionDisplay: "ActionDisplay",             // inline / menu
+
+  // ===== card 専用 =====
+  cardTitleColumn: "CardTitleColumn",
+  cardSubtitleColumn: "CardSubtitleColumn",
+  cardHeaderColumn: "CardHeaderColumn",       // Large layout
+  cardSubheaderColumn: "CardSubheaderColumn", // Large layout
+  cardDescriptionColumn: "CardDescriptionColumn", // Large layout
+  thumbnailColumn: "ThumbnailColumn",         // List layout
+
+  // ===== detail =====
+  mainSlideshowImageColumn: "MainSlideshowImageColumn",
+  detailContentColumn: "DetailContentColumn",
+  headerColumns: "HeaderColumns",
+  quickEditColumns: "QuickEditColumns",
+  imageStyle: "ImageStyle",
+  useCardLayout: "UseCardLayout",
+  displayMode: "DisplayMode",
+  maxNestedRows: "MaxNestedRows",
+  slideshowMode: "SlideshowMode",
+  desktopSplitMode: "DesktopSplitMode",
+  useDesktopMultiColumn: "UseDesktopMultiColumn",
+  includeShowColumns: "IncludeShowColumns",   // Page_Header/Section_Header 表示切替
+  defaultDetailStyle: "DefaultDetailStyle",   // Normal/Centered/No Headings/Side-by-side
+
+  // ===== form =====
+  autoSave: "AutoSave",
+  autoReopen: "AutoReopen",
+  finishView: "FinishView",
+  rowKey: "RowKey",
+  formStyle: "FormStyle",
+  pageStyle: "PageStyle",
+  formFooterStyle: "FormFooterStyle",
+  audioInput: "AudioInput",
+  saveCancelPosition: "SaveCancelPosition",   // Top / Bottom
+  hideNumbering: "HideNumbering",             // ページ番号非表示
+  autoAdvanceFields: "AutoAdvanceFields",     // Enum 選択後自動次へ
+  tabsLabels: "TabsLabels",                   // Tabs スタイル時のタブ名
+
+  // ===== dashboard =====
+  viewEntries: "ViewEntries",
+  interactiveMode: "InteractiveMode",
+  showTabs: "ShowTabs",
+  overlayActions: "OverlayActions",           // ビュー単位 overlay (要検証)
+
+  // ===== calendar =====
+  startDateColumn: "StartDateColumn",
+  startTimeColumn: "StartTimeColumn",
+  endDateColumn: "EndDateColumn",
+  endTimeColumn: "EndTimeColumn",
+  labelColumn: "LabelColumn",
+  categoryColumn: "CategoryColumn",
+  defaultCalendarView: "DefaultCalendarView",
+  descriptionColumn: "DescriptionColumn",     // イベント説明列 (labelColumn と別)
+  allDayEvents: "AllDayEvents",               // 終日イベント
+  timeFormat: "TimeFormat",                   // 12h / 24h
+
+  // ===== map =====
+  mapType: "MapType",
+  mapColumn: "MapColumn",
+  locationMode: "LocationMode",
+  secondaryTable: "SecondaryTable",
+  secondaryColumn: "SecondaryColumn",
+  minimumClusterSize: "MinimumClusterSize",
+  hidePointsOfInterest: "HidePointsOfInterest", // POI 非表示
+  mapPinLimit: "MapPinLimit",                   // 表示上限
+  kmlLayer: "KmlLayer",                         // 地理レイヤー追加
+  backgroundImage: "BackgroundImage",           // カスタムマップ画像
+
+  // ===== chart =====
+  chartType: "ChartType",
+  useNewChartExperience: "UseNewChartExperience",
+  chartConfig: "ChartConfig",
+  chartColumns: "ChartColumns",
+  trendLine: "TrendLine",
+  chartColors: "ChartColors",
+  labelType: "LabelType",
+  showLegend: "ShowLegend",
+  histogramColumn: "HistogramColumn",         // Histogram 専用
+  stacked: "Stacked",                         // bar/column スタック
+  yAxisLabel: "YAxisLabel",                   // 新 Chart 体験
+  xAxisLabel: "XAxisLabel",                   // 新 Chart 体験
+
+  // ===== gallery =====
+  imageSize: "ImageSize",
+  galleryImageColumn: "GalleryImageColumn",   // 表示画像列指定
+
+  // ===== onboarding =====
+  image: "Image",
+  title: "Title",
+  firstBlurb: "FirstBlurb",
+  secondBlurb: "SecondBlurb",                 // Second short blurb
+  pageBackgroundColor: "PageBackgroundColor", // ページ背景色
+};
+
+export async function setViewOptions(args: {
+  appId?: string;
+  appName?: string;
+  viewName: string;
+  newName?: string;
+  tableName?: string;
+  position?: string;
+  showIf?: string | null;
+  displayName?: string | null;
+  description?: string | null;
+  options?: Record<string, unknown>;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; viewName: string; changes: Record<string, { before: unknown; after?: unknown }>; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const controls = ((app as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  if (!controls) throw new Error("Controls 不明");
+  const view = controls.find((c) => c.Name === args.viewName);
+  if (!view) throw new Error(`View '${args.viewName}' が見つかりません`);
+
+  const viewDef = view.ViewDefinition as Record<string, unknown> | undefined;
+  if (!viewDef) throw new Error(`View '${args.viewName}' に ViewDefinition がありません`);
+
+  // 変更前の値を記録
+  const changes: Record<string, { before: unknown; after?: unknown }> = {};
+  const recordChange = (key: string, before: unknown) => { changes[key] = { before }; };
+
+  if (args.newName !== undefined && args.newName !== view.Name) recordChange("Name", view.Name);
+  if (args.tableName !== undefined && args.tableName !== view.TableOrFolderName) recordChange("TableOrFolderName", view.TableOrFolderName);
+  if (args.position !== undefined && args.position !== view.Position) recordChange("Position", view.Position);
+  if (args.showIf !== undefined) recordChange("ShowIf", view.ShowIf);
+  if (args.displayName !== undefined) recordChange("DisplayName", view.DisplayName);
+  if (args.description !== undefined) recordChange("Description", view.Description);
+
+  if (args.options) {
+    for (const [optKey] of Object.entries(args.options)) {
+      const fieldKey = VIEW_OPTION_FIELD_MAP[optKey] ?? optKey;
+      const before = viewDef[fieldKey];
+      recordChange(fieldKey, before);
+    }
+  }
+
+  if (Object.keys(changes).length === 0) {
+    return { dryRun: !args.apply, applied: false, viewName: args.viewName, changes: {}, message: "変更なし（指定値が既存値と同じ or オプション未指定）" };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const ctrls = ((a as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+    const target = ctrls?.find((c) => c.Name === args.viewName);
+    if (!target) throw new Error(`View '${args.viewName}' が見つかりません（リトライ時）`);
+
+    if (args.newName !== undefined) target.Name = args.newName;
+    if (args.tableName !== undefined) target.TableOrFolderName = args.tableName;
+    if (args.position !== undefined) target.Position = args.position;
+    if (args.showIf !== undefined) target.ShowIf = args.showIf === null ? null : args.showIf;
+    if (args.displayName !== undefined) target.DisplayName = args.displayName;
+    if (args.description !== undefined) target.Description = args.description;
+
+    if (args.options) {
+      const targetDef = target.ViewDefinition as Record<string, unknown>;
+      let settings: Record<string, unknown>;
+      try { settings = JSON.parse((target.Settings ?? "{}") as string); } catch { settings = {}; }
+      for (const [optKey, value] of Object.entries(args.options)) {
+        const fieldKey = VIEW_OPTION_FIELD_MAP[optKey] ?? optKey;
+        targetDef[fieldKey] = value;
+        settings[fieldKey] = value;
+      }
+      target.Settings = JSON.stringify(settings);
+    }
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, viewName: args.viewName, changes, message: "dry-run。apply: true で実際送信。" };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedCtrls = ((refreshed as Record<string, unknown>).Presentation as Record<string, unknown>)?.Controls as Array<Record<string, unknown>> | undefined;
+  // newName がある場合は新名で探す
+  const lookupName = args.newName ?? args.viewName;
+  const refreshedView = refreshedCtrls?.find((c) => c.Name === lookupName);
+  if (refreshedView) {
+    const refreshedDef = refreshedView.ViewDefinition as Record<string, unknown> | undefined;
+    for (const key of Object.keys(changes)) {
+      let after: unknown;
+      if (key === "Name") after = refreshedView.Name;
+      else if (key === "TableOrFolderName") after = refreshedView.TableOrFolderName;
+      else if (key === "Position") after = refreshedView.Position;
+      else if (key === "ShowIf") after = refreshedView.ShowIf;
+      else if (key === "DisplayName") after = refreshedView.DisplayName;
+      else if (key === "Description") after = refreshedView.Description;
+      else after = refreshedDef?.[key];
+      changes[key].after = after;
+    }
+  }
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  const changeCount = Object.keys(changes).length;
+  return { dryRun: false, applied: true, viewName: lookupName, changes, message: `✅ View options 更新完了 (${changeCount} 件)` };
+}
+
+// ===== Column Options =====
+// Attribute トップレベル: boolean フラグ
+const COLUMN_TOPLEVEL_BOOL: Record<string, string> = {
+  isKey: "IsKey",
+  isLabel: "IsLabel",
+  isHidden: "IsHidden",
+  searchable: "Searchable",
+  isScannable: "IsScannable",
+  isNfcScannable: "IsNfcScannable",
+  isSensitive: "IsSensitive",
+  isRequired: "IsRequired",
+  resetOnEdit: "ResetOnEdit",
+  defEdit: "DefEdit",
+};
+
+// Attribute トップレベル: 文字列 (式でない)
+const COLUMN_TOPLEVEL_STR: Record<string, string> = {
+  description: "Description",
+  displayName: "DisplayName",
+};
+
+// Attribute トップレベル: 式 (= prefix を normalize)
+const COLUMN_TOPLEVEL_FORMULA: Record<string, string> = {
+  initialValue: "Default",
+  appFormula: "AppFormula",
+};
+
+// TypeAuxData: 式
+const COLUMN_AUX_FORMULA: Record<string, string> = {
+  showIf: "Show_If",
+  validIf: "Valid_If",
+  errorMessageIfInvalid: "Error_Message_If_Invalid",
+  requiredIf: "Required_If",
+  editableIf: "Editable_If",
+  resetIf: "Reset_If",
+  suggestedValues: "Suggested_Values",
+};
+
+// TypeAuxData: 文字列 (式でない)
+const COLUMN_AUX_STR: Record<string, string> = {
+  yesLabel: "YesLabel",
+  noLabel: "NoLabel",
+  inputMode: "InputMode",
+  externalRelationshipName: "RelationshipName",
+  referencedTableName: "ReferencedTableName",
+};
+
+// TypeAuxData: boolean
+const COLUMN_AUX_BOOL: Record<string, string> = {
+  isPartOf: "IsAPartOf",  // "A" は大文字 (AppSheet 内部表記)
+};
+
+// 式更新時に削除するコンパイル済みキャッシュ
+// [optKey, location, fieldName]
+const FORMULA_CACHE_INVALIDATIONS: Array<[string, "topLevel" | "internalQualifier", string]> = [
+  ["appFormula", "internalQualifier", "AppFormulaExpression"],
+  ["initialValue", "topLevel", "DefaultExpression"],
+  ["showIf", "internalQualifier", "Show_If_AppEval"],
+  ["validIf", "internalQualifier", "Valid_If_AppEval"],
+  ["requiredIf", "internalQualifier", "Required_If_AppEval"],
+  ["editableIf", "internalQualifier", "Editable_If_AppEval"],
+  ["resetIf", "internalQualifier", "Reset_If_AppEval"],
+];
+
+export async function setColumnOptions(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  newName?: string;
+  options?: Record<string, unknown>;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  table: string;
+  column: string;
+  changes: Record<string, { before: unknown; after?: unknown }>;
+  unknownKeys: string[];
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const attr = findAttribute(app, args.tableName, args.columnName);
+
+  const opts = args.options ?? {};
+  const changes: Record<string, { before: unknown; after?: unknown }> = {};
+  const unknownKeys: string[] = [];
+
+  const allMaps: Array<Record<string, string>> = [
+    COLUMN_TOPLEVEL_BOOL, COLUMN_TOPLEVEL_STR, COLUMN_TOPLEVEL_FORMULA,
+    COLUMN_AUX_FORMULA, COLUMN_AUX_STR, COLUMN_AUX_BOOL,
+  ];
+  const knownKeys = new Set<string>();
+  for (const m of allMaps) Object.keys(m).forEach((k) => knownKeys.add(k));
+
+  // 現在の TypeAuxData を解析 (before 値抽出のため)
+  const currentAuxRaw = (attr.TypeAuxData ?? "{}") as string;
+  let currentAux: Record<string, unknown>;
+  try { currentAux = JSON.parse(currentAuxRaw); } catch { currentAux = {}; }
+
+  if (args.newName !== undefined && args.newName !== attr.Name) {
+    changes["Name"] = { before: attr.Name };
+  }
+
+  for (const optKey of Object.keys(opts)) {
+    if (!knownKeys.has(optKey)) {
+      unknownKeys.push(optKey);
+      continue;
+    }
+    let before: unknown;
+    if (optKey in COLUMN_TOPLEVEL_BOOL) before = attr[COLUMN_TOPLEVEL_BOOL[optKey]];
+    else if (optKey in COLUMN_TOPLEVEL_STR) before = attr[COLUMN_TOPLEVEL_STR[optKey]];
+    else if (optKey in COLUMN_TOPLEVEL_FORMULA) before = attr[COLUMN_TOPLEVEL_FORMULA[optKey]];
+    else if (optKey in COLUMN_AUX_FORMULA) before = currentAux[COLUMN_AUX_FORMULA[optKey]];
+    else if (optKey in COLUMN_AUX_STR) before = currentAux[COLUMN_AUX_STR[optKey]];
+    else if (optKey in COLUMN_AUX_BOOL) before = currentAux[COLUMN_AUX_BOOL[optKey]];
+    changes[optKey] = { before };
+  }
+
+  if (Object.keys(changes).length === 0) {
+    let msg = "変更なし（指定なし or 既に同値）";
+    if (unknownKeys.length) msg += ` / 未知キー無視: ${unknownKeys.join(', ')}`;
+    return { dryRun: !args.apply, applied: false, table: args.tableName, column: args.columnName, changes: {}, unknownKeys, message: msg };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const t = findAttribute(a, args.tableName, args.columnName);
+    if (args.newName !== undefined && args.newName !== t.Name) {
+      t.Name = args.newName;
+    }
+
+    const auxRaw = (t.TypeAuxData ?? "{}") as string;
+    let aux: Record<string, unknown>;
+    try { aux = JSON.parse(auxRaw); } catch { aux = {}; }
+    let auxModified = false;
+
+    for (const [optKey, value] of Object.entries(opts)) {
+      if (!knownKeys.has(optKey)) continue;
+      if (optKey in COLUMN_TOPLEVEL_BOOL) {
+        t[COLUMN_TOPLEVEL_BOOL[optKey]] = value;
+      } else if (optKey in COLUMN_TOPLEVEL_STR) {
+        t[COLUMN_TOPLEVEL_STR[optKey]] = value;
+      } else if (optKey in COLUMN_TOPLEVEL_FORMULA) {
+        const fieldName = COLUMN_TOPLEVEL_FORMULA[optKey];
+        t[fieldName] = (typeof value === 'string' && value.length > 0) ? normalizeFormula(value) : value;
+      } else if (optKey in COLUMN_AUX_FORMULA) {
+        const fieldName = COLUMN_AUX_FORMULA[optKey];
+        aux[fieldName] = (typeof value === 'string' && value.length > 0) ? normalizeFormula(value) : value;
+        auxModified = true;
+      } else if (optKey in COLUMN_AUX_STR) {
+        aux[COLUMN_AUX_STR[optKey]] = value;
+        auxModified = true;
+      } else if (optKey in COLUMN_AUX_BOOL) {
+        aux[COLUMN_AUX_BOOL[optKey]] = value;
+        auxModified = true;
+      }
+    }
+
+    if (auxModified) t.TypeAuxData = JSON.stringify(aux);
+
+    // コンパイル済みキャッシュ無効化 (式が変わった場合 AppSheet に再コンパイルさせる)
+    const iqRaw = t.InternalQualifier;
+    const iq = (iqRaw && typeof iqRaw === 'object') ? (iqRaw as Record<string, unknown>) : null;
+    for (const [optKey, location, cacheField] of FORMULA_CACHE_INVALIDATIONS) {
+      if (!(optKey in opts)) continue;
+      if (location === "topLevel") delete t[cacheField];
+      else if (iq) delete iq[cacheField];
+    }
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    let msg = "dry-run。apply: true で実際送信。";
+    if (unknownKeys.length) msg += ` (未知キー: ${unknownKeys.join(', ')})`;
+    return { dryRun: true, applied: false, table: args.tableName, column: args.columnName, changes, unknownKeys, message: msg };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const lookupName = args.newName ?? args.columnName;
+  const refreshedAttr = findAttribute(refreshed, args.tableName, lookupName);
+  const refreshedAuxRaw = (refreshedAttr.TypeAuxData ?? "{}") as string;
+  let refreshedAux: Record<string, unknown>;
+  try { refreshedAux = JSON.parse(refreshedAuxRaw); } catch { refreshedAux = {}; }
+
+  if ("Name" in changes) changes["Name"].after = refreshedAttr.Name;
+  for (const optKey of Object.keys(opts)) {
+    if (!knownKeys.has(optKey)) continue;
+    let after: unknown;
+    if (optKey in COLUMN_TOPLEVEL_BOOL) after = refreshedAttr[COLUMN_TOPLEVEL_BOOL[optKey]];
+    else if (optKey in COLUMN_TOPLEVEL_STR) after = refreshedAttr[COLUMN_TOPLEVEL_STR[optKey]];
+    else if (optKey in COLUMN_TOPLEVEL_FORMULA) after = refreshedAttr[COLUMN_TOPLEVEL_FORMULA[optKey]];
+    else if (optKey in COLUMN_AUX_FORMULA) after = refreshedAux[COLUMN_AUX_FORMULA[optKey]];
+    else if (optKey in COLUMN_AUX_STR) after = refreshedAux[COLUMN_AUX_STR[optKey]];
+    else if (optKey in COLUMN_AUX_BOOL) after = refreshedAux[COLUMN_AUX_BOOL[optKey]];
+    if (changes[optKey]) changes[optKey].after = after;
+  }
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  let msg = `✅ Column options 更新完了 (${Object.keys(changes).length} 件)`;
+  if (unknownKeys.length) msg += ` / 未知キー無視: ${unknownKeys.join(', ')}`;
+  return { dryRun: false, applied: true, table: args.tableName, column: lookupName, changes, unknownKeys, message: msg };
 }

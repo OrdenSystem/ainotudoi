@@ -70,8 +70,20 @@ import {
   addSlice,
   removeSlice,
   addCallScriptTask,
+  setCallScriptTask,
   createTable,
   createView,
+  setColumnYNLabels,
+  setViewDisplayMode,
+  setViewOptions,
+  setColumnOptions,
+  addSendEmailTask,
+  addWebhookTask,
+  addBranchStep,
+  removeStep,
+  moveStep,
+  setBotTrigger,
+  setBotOptions,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -642,6 +654,255 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_set_column_yn_labels",
+    description:
+      "Yes/No 型列の表示ラベル (YesLabel / NoLabel) を設定する。データ型は変更しない (TypeAuxData の YesLabel / NoLabel を更新)。例: 完了フラグ → '完了' / '未完了'。デフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string" },
+        yesLabel: { type: "string", description: "Yes (TRUE) 時の表示文字列" },
+        noLabel: { type: "string", description: "No (FALSE) 時の表示文字列" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName", "yesLabel", "noLabel"],
+    },
+  },
+  {
+    name: "appsheet_add_send_email_task",
+    description:
+      "Bot の Process に Send Email Task を追加する。Behavior.Tasks に Email Task ($type=AppWorkflowActionEmail) を作成し、Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Email) を append。\n\n## 必須\n- processName: 既存 Process の Name (Bot 作成時に Process が同時生成される)\n- taskName: Task のユニーク名\n- tableName: 対象テーブル\n- subject: メール件名 ('<<[列名]>>' で動的展開可)\n\n## 任意\n- toList / ccList / bccList: 宛先メール配列\n- body: 本文 ('<<[列名]>>' 展開可)\n- emailType: 'CustomTemplate' (default) / 'AppDefault'\n- attachmentTemplate / attachmentContentType (PDF/DOCX/XLSX/HTML/CSV)\n- forEntireTable: true でスケジュール時テーブル全行送信\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        toList: { type: "array", items: { type: "string" } },
+        ccList: { type: "array", items: { type: "string" } },
+        bccList: { type: "array", items: { type: "string" } },
+        fromAddress: { type: "string" },
+        fromDisplay: { type: "string" },
+        replyTo: { type: "string" },
+        preHeader: { type: "string" },
+        subject: { type: "string" },
+        body: { type: "string" },
+        emailType: { type: "string", enum: ["CustomTemplate", "AppDefault"] },
+        bodyTemplate: { type: ["string", "null"] },
+        attachmentTemplate: { type: ["string", "null"] },
+        attachmentName: { type: ["string", "null"] },
+        attachmentContentType: { type: "string", enum: ["PDF", "DOCX", "XLSX", "HTML", "CSV"] },
+        useDefaultContent: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName", "subject"],
+    },
+  },
+  {
+    name: "appsheet_add_webhook_task",
+    description:
+      "Bot の Process に Webhook Task を追加する。Behavior.Tasks に Webhook Task ($type=AppWorkflowActionWebhook) を作成し、Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Webhook) を append。\n\n## 必須\n- processName / taskName / tableName / url\n\n## 任意\n- preset: 'Custom' (default) / 'Slack Hook' / 'AppSheet API'\n- verb: 'Get' / 'Post' (default) / 'Put' / 'Delete' / 'Patch'\n- contentType: 'JSON' (default) / 'XML' / 'FormUrlEncoded'\n- body: リクエストボディ (templating可)\n- headers: [{name, value}] 配列\n- timeoutSeconds: default 180\n- maxRetryCount: default 3\n- asyncExec: 非同期実行\n- targetAppId: AppSheet API preset 用の対象 App ID\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        url: { type: "string" },
+        preset: { type: "string", enum: ["Custom", "Slack Hook", "AppSheet API"] },
+        verb: { type: "string", enum: ["Get", "Post", "Put", "Delete", "Patch"] },
+        contentType: { type: "string", enum: ["JSON", "XML", "FormUrlEncoded"] },
+        body: { type: "string" },
+        bodyTemplate: { type: ["string", "null"] },
+        headers: {
+          type: "array",
+          items: { type: "object", properties: { name: { type: "string" }, value: { type: "string" } }, required: ["name", "value"] },
+        },
+        timeoutSeconds: { type: "number" },
+        maxRetryCount: { type: "number" },
+        asyncExec: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        targetAppId: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName", "url"],
+    },
+  },
+  {
+    name: "appsheet_remove_step",
+    description:
+      "Bot の Process から指定 Step を削除する。Process.Nodes から該当 Node を splice、TaskNode の場合は対応 Task も他参照が無ければ自動削除。\n\n## 識別方法\n- stepName で指定 (推奨・デフォルト)\n- 同名 step 複数の場合は componentId で指定\n\n## 動作\n- TaskNode 削除時: 他 Process/Step から参照されていない Task は Behavior.Tasks からも削除 (removeOrphanedTask=false で抑止可)\n- IfElseNode 削除時: IfNodes/ElseNodes 配下の子 Step も連動削除 (再帰的に消える)\n- RunActionNode / その他: Node のみ削除\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string", description: "削除対象の StepName" },
+        componentId: { type: "string", description: "ComponentId による削除 (重複名がある場合)" },
+        removeOrphanedTask: { type: "boolean", description: "TaskNode 削除時に紐づく Task も削除するか (default: true)" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName"],
+    },
+  },
+  {
+    name: "appsheet_move_step",
+    description:
+      "Process.Nodes 内で Step を任意の位置に移動する (並び替え)。IfNodes/ElseNodes 配下のネストは範囲外。\n\n## 必須\n- processName: 対象 Process 名\n- toIndex: 移動先 index (0 始まり、Process.Nodes の長さ未満)\n\n## 識別 (どちらか必須)\n- stepName: StepName で識別 (推奨)\n- componentId: 同名 step がある場合に使用\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string", description: "移動対象の StepName" },
+        componentId: { type: "string" },
+        toIndex: { type: "number", description: "移動先 index (0 始まり)" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "toIndex"],
+    },
+  },
+  {
+    name: "appsheet_add_branch_step",
+    description:
+      "Bot の Process に Branch (If/Else) Step を追加する。Process.Nodes に IfElseNode ($type=ProcessNodes.IfElseNode, NodeType=IF_ELSE) を append。Task は不要。\n\n## 必須\n- processName / stepName / condition (式、'=' 自動付与)\n\n## 補足\n- IfNodes / ElseNodes は空で作成。子 Step は Editor 上 or 別途追加が必要 (現状本ツールは branch 作成のみ)\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string" },
+        condition: { type: "string", description: "条件式。'=' 自動付与" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "stepName", "condition"],
+    },
+  },
+  {
+    name: "appsheet_set_bot_trigger",
+    description:
+      "既存 Bot の Trigger (AppEvent) を編集する。eventType の切替 (DataChange ↔ Scheduled)、ChangeEvent 種別変更、cron / timeZone 編集、filterCondition 編集、bot.Disabled の切替に対応。\n\n## 必須\n- botName: 編集対象 Bot 名\n\n## 任意 (どれか 1 つ以上)\n- eventType: 'ADDS_ONLY' / 'UPDATES_ONLY' / 'DELETES_ONLY' / 'ADDS_AND_UPDATES' / 'ADDS_UPDATES_DELETES' / 'Scheduled'\n- filterCondition: 条件式 ('=' 自動付与)。空文字は変更なし扱い\n- tableName: Schedule の Table or DataChange の SchemaName 解決対象\n- scheduleConfig: { cron, timeZone, forEachRowInTable, region } の部分更新\n- disabled: Bot 有効/無効\n\n## 切替時のルール\n- DataChange → Scheduled: scheduleConfig.cron が必須\n- Scheduled → DataChange: eventType (ADDS_ONLY 等) が必須\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        botName: { type: "string" },
+        eventType: { type: "string", enum: ["ADDS_ONLY", "UPDATES_ONLY", "DELETES_ONLY", "ADDS_AND_UPDATES", "ADDS_UPDATES_DELETES", "Scheduled"] },
+        filterCondition: { type: "string", description: "条件式。'=' 自動付与。空文字は変更なし" },
+        tableName: { type: "string" },
+        scheduleConfig: {
+          type: "object",
+          properties: {
+            cron: { type: "string", description: "5 フィールド cron。例: '0 12 1 * *' (月初 12:00)" },
+            timeZone: { type: "string", description: "Windows TZ。例: 'Tokyo Standard Time'" },
+            forEachRowInTable: { type: "boolean" },
+            region: { type: "string" },
+          },
+        },
+        disabled: { type: "boolean" },
+        apply: { type: "boolean" },
+      },
+      required: ["botName"],
+    },
+  },
+  {
+    name: "appsheet_set_bot_options",
+    description:
+      "Bot のメタ情報のみを編集する (Trigger/Process/Tasks は触らない)。改名 / アイコン / コメント / 有効・無効 を partial update。\n\n## 必須\n- botName: 編集対象 Bot 名\n\n## 任意 (どれか 1 つ以上)\n- newName: Bot 改名 (Event/Process は EventName/ProcessName で参照されており影響なし)\n- icon: アイコン (FontAwesome / Material Icons 名)。null で削除\n- comment: コメント。null で削除\n- disabled: 有効/無効\n\n## set_bot_trigger との使い分け\n- Trigger 関連 (eventType/cron/filterCondition) を変えたい → set_bot_trigger\n- Bot 名やアイコン/コメントだけ変えたい → set_bot_options\n- Disabled だけはどちらでも可\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        botName: { type: "string" },
+        newName: { type: "string" },
+        icon: { type: ["string", "null"], description: "アイコン名。null で削除" },
+        comment: { type: ["string", "null"], description: "コメント。null で削除" },
+        disabled: { type: "boolean" },
+        apply: { type: "boolean" },
+      },
+      required: ["botName"],
+    },
+  },
+  {
+    name: "appsheet_set_column_options",
+    description:
+      "既存列の任意プロパティを部分更新する汎用ツール。Column の attribute トップレベル / TypeAuxData (JSON) / InternalQualifier (コンパイル済みキャッシュ) を適切な箇所に振り分けて PATCH 的に同時更新。\n\n## 編集対象 (camelCase キー → AppSheet 内部表記)\n### Display 系\n- displayName / description (Column edit screen の Display name / Description)\n\n### Other Properties (boolean フラグ)\n- isLabel / isHidden / searchable / isScannable / isNfcScannable / isSensitive\n\n### Update Behavior\n- isKey / isRequired / resetOnEdit / defEdit (Editable?)\n\n### Auto Compute\n- appFormula (App formula。'=' が無ければ自動付与) / initialValue (Default。式は '=' 付与)\n\n### Data Validity (式)\n- validIf / errorMessageIfInvalid / requiredIf / editableIf / resetIf / showIf / suggestedValues\n  (式は '=' を自動 normalize、null で削除)\n\n### Type-specific (TypeAuxData)\n- yesLabel / noLabel (Yes/No 型)\n- inputMode (Ref 型: 'Auto' / 'Buttons' / 'Dropdown')\n- isPartOf (Ref 型: 'Is a part of?' boolean)\n- referencedTableName (Ref 型: Source table)\n- externalRelationshipName (Ref 型: External relationship name)\n\n### Rename\n- newName で列名変更 (注意: 他箇所で参照されている場合は手動修正が必要)\n\n## キャッシュ無効化\n式系を更新したとき、対応する InternalQualifier の AppEval キャッシュを自動削除して AppSheet に再コンパイルさせる。\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string", description: "現在の列名 (識別子)" },
+        newName: { type: "string", description: "rename 後の新列名 (任意)" },
+        options: {
+          type: "object",
+          description: "更新するプロパティを camelCase で指定。指定キーのみ更新、他はそのまま。未知キーは無視 (結果に unknownKeys として返却)",
+          additionalProperties: true,
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName"],
+    },
+  },
+  {
+    name: "appsheet_set_view_options",
+    description:
+      "既存 view の任意プロパティを部分更新する汎用ツール。Settings JSON と ViewDefinition を PATCH 的に同時更新。\n\n## 編集対象\n- **トップレベル**: newName (rename) / tableName / position / showIf / displayName / description\n- **ViewDefinition (options)**: create_view と同じ camelCase キー語彙。指定したキーのみ上書き、他はそのまま。\n\n## options の主な対応キー (camelCase → AppSheet 内部 PascalCase)\n- table: columnWidth / enableQuickEdit / columnOrder / sortBy / groupBy / groupAggregate\n- card / deck: imageShape / mainDeckImageColumn / primaryDeckHeaderColumn / secondaryDeckHeaderColumn / deckSummaryColumn / deckNestedTableColumn / showActionBar\n- detail: useCardLayout / mainSlideshowImageColumn / detailContentColumn / headerColumns / quickEditColumns / columnOrder / imageStyle / displayMode (Side-by-side 等) / maxNestedRows / slideshowMode / desktopSplitMode / useDesktopMultiColumn\n- form: pageStyle / formStyle / columnOrder / formFooterStyle (Bottom/Top) / autoSave / autoReopen / finishView / maxNestedRows / audioInput\n- dashboard: viewEntries / interactiveMode / showTabs\n- chart: chartType / chartColumns / groupAggregate / trendLine / showLegend\n- 共通: icon / menuOrder / sortBy / groupBy\n\n## 値の注意\n- displayMode は AppSheet 内部表記必須: Automatic / Normal / Centered / 'No headings' / 'Side-by-side'\n- imageShape: 'Square Image' / 'Round Image' / 'Full Image'\n- formStyle: Automatic / Default / 'Side-by-side'\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        viewName: { type: "string", description: "編集対象 view 名 (識別子)" },
+        newName: { type: "string", description: "rename 後の新 view 名 (任意)" },
+        tableName: { type: "string", description: "ソーステーブル/Slice 変更 (任意)" },
+        position: {
+          type: "string",
+          description: "left/center/right (PRIMARY) / menu (MENU) / ref (REFERENCE) / none (隠し)。first/next/middle/later/last は内部マップなしで直接送信されるので AppSheet 内部値を使用",
+        },
+        showIf: { type: ["string", "null"], description: "ShowIf 式。null で削除" },
+        displayName: { type: ["string", "null"], description: "DisplayName。null で削除" },
+        description: { type: ["string", "null"], description: "Description。null で削除" },
+        options: {
+          type: "object",
+          description: "ViewDefinition のプロパティを camelCase で指定。指定キーのみ更新、他はそのまま",
+          additionalProperties: true,
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["viewName"],
+    },
+  },
+  {
+    name: "appsheet_set_view_displaymode",
+    description:
+      "既存 detail view の DisplayMode を変更。view の Settings JSON と ViewDefinition.DisplayMode を同時更新。detail view ($type=SlideshowViewSettings) のみ対応。デフォルト dry-run。\n\n値は AppSheet 内部表記に厳密一致が必要 (大文字小文字・ハイフン)。'SideBySide' ではなく 'Side-by-side'。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        viewName: { type: "string" },
+        displayMode: {
+          type: "string",
+          enum: ["Automatic", "Normal", "Centered", "No headings", "Side-by-side"],
+          description: "AppSheet 内部値。Automatic / Normal / Centered / No headings / Side-by-side",
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["viewName", "displayMode"],
+    },
+  },
+  {
     name: "appsheet_create_view",
     description:
       "View (Presentation.Controls の要素) を新規作成する。対応: table / card / detail / form / deck / dashboard / calendar / map / chart / gallery / onboarding (11 種)。kanban / gantt は AppSheet 現行 UI から削除されているため未対応。viewType ごとに ViewDefinition の $type と必須/特徴フィールドが異なる。Settings (JSON 文字列) と ViewDefinition (オブジェクト) を両方構築。デフォルト dry-run。",
@@ -756,6 +1017,39 @@ const tools: Tool[] = [
         apply: { type: "boolean" },
       },
       required: ["processName", "taskName", "scriptId", "functionName", "tableName"],
+    },
+  },
+  {
+    name: "appsheet_set_call_script_task",
+    description:
+      "既存 AppsScript Task の編集。scriptId / functionName / functionArguments / tableName / asyncExec / forEntireTable / Task 名 (newName) を部分更新。\n\n## 必須\n- taskName: 編集対象 Task 名\n\n## 任意 (どれか 1 つ以上)\n- newName: Task 改名 (全 Process の TaskNode.Task 参照も自動更新)\n- scriptId: 'DocId=...' 形式\n- functionName: 呼出関数名\n- functionArguments: [{name, expression}] 配列。指定時は **全置換**\n- tableName: スコープ対象テーブル\n- asyncExec / forEntireTable: 実行モード\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        taskName: { type: "string", description: "編集対象 Task 名" },
+        newName: { type: "string", description: "新しい Task 名 (TaskNode 参照も同時更新)" },
+        scriptId: { type: "string", description: "GAS スクリプト ID。'DocId=...' 形式" },
+        functionName: { type: "string" },
+        functionArguments: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              expression: { type: "string", description: "AppSheet 式。'=' 自動付与" },
+            },
+            required: ["name", "expression"],
+          },
+          description: "GAS 関数引数の **全置換**。空配列で全削除",
+        },
+        tableName: { type: "string" },
+        asyncExec: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        apply: { type: "boolean" },
+      },
+      required: ["taskName"],
     },
   },
   {
@@ -1025,6 +1319,28 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return removeTable(args as Parameters<typeof removeTable>[0]);
     case "appsheet_set_column_description":
       return setColumnDescription(args as Parameters<typeof setColumnDescription>[0]);
+    case "appsheet_set_column_yn_labels":
+      return setColumnYNLabels(args as Parameters<typeof setColumnYNLabels>[0]);
+    case "appsheet_set_view_displaymode":
+      return setViewDisplayMode(args as Parameters<typeof setViewDisplayMode>[0]);
+    case "appsheet_set_view_options":
+      return setViewOptions(args as Parameters<typeof setViewOptions>[0]);
+    case "appsheet_set_column_options":
+      return setColumnOptions(args as Parameters<typeof setColumnOptions>[0]);
+    case "appsheet_add_send_email_task":
+      return addSendEmailTask(args as Parameters<typeof addSendEmailTask>[0]);
+    case "appsheet_add_webhook_task":
+      return addWebhookTask(args as Parameters<typeof addWebhookTask>[0]);
+    case "appsheet_add_branch_step":
+      return addBranchStep(args as Parameters<typeof addBranchStep>[0]);
+    case "appsheet_remove_step":
+      return removeStep(args as Parameters<typeof removeStep>[0]);
+    case "appsheet_move_step":
+      return moveStep(args as Parameters<typeof moveStep>[0]);
+    case "appsheet_set_bot_trigger":
+      return setBotTrigger(args as Parameters<typeof setBotTrigger>[0]);
+    case "appsheet_set_bot_options":
+      return setBotOptions(args as Parameters<typeof setBotOptions>[0]);
     case "appsheet_set_security_filter":
       return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
     case "appsheet_promote_to_ref":
@@ -1039,6 +1355,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return removeSlice(args as Parameters<typeof removeSlice>[0]);
     case "appsheet_add_call_script_task":
       return addCallScriptTask(args as Parameters<typeof addCallScriptTask>[0]);
+    case "appsheet_set_call_script_task":
+      return setCallScriptTask(args as Parameters<typeof setCallScriptTask>[0]);
     case "appsheet_create_table":
       return createTable(args as Parameters<typeof createTable>[0]);
     case "appsheet_create_view":
