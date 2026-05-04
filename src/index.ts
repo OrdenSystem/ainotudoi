@@ -75,6 +75,7 @@ import {
   setColumnYNLabels,
   setViewDisplayMode,
   setViewOptions,
+  setColumnOptions,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -663,6 +664,28 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_set_column_options",
+    description:
+      "既存列の任意プロパティを部分更新する汎用ツール。Column の attribute トップレベル / TypeAuxData (JSON) / InternalQualifier (コンパイル済みキャッシュ) を適切な箇所に振り分けて PATCH 的に同時更新。\n\n## 編集対象 (camelCase キー → AppSheet 内部表記)\n### Display 系\n- displayName / description (Column edit screen の Display name / Description)\n\n### Other Properties (boolean フラグ)\n- isLabel / isHidden / searchable / isScannable / isNfcScannable / isSensitive\n\n### Update Behavior\n- isKey / isRequired / resetOnEdit / defEdit (Editable?)\n\n### Auto Compute\n- appFormula (App formula。'=' が無ければ自動付与) / initialValue (Default。式は '=' 付与)\n\n### Data Validity (式)\n- validIf / errorMessageIfInvalid / requiredIf / editableIf / resetIf / showIf / suggestedValues\n  (式は '=' を自動 normalize、null で削除)\n\n### Type-specific (TypeAuxData)\n- yesLabel / noLabel (Yes/No 型)\n- inputMode (Ref 型: 'Auto' / 'Buttons' / 'Dropdown')\n- isPartOf (Ref 型: 'Is a part of?' boolean)\n- referencedTableName (Ref 型: Source table)\n- externalRelationshipName (Ref 型: External relationship name)\n\n### Rename\n- newName で列名変更 (注意: 他箇所で参照されている場合は手動修正が必要)\n\n## キャッシュ無効化\n式系を更新したとき、対応する InternalQualifier の AppEval キャッシュを自動削除して AppSheet に再コンパイルさせる。\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" },
+        appName: { type: "string" },
+        tableName: { type: "string" },
+        columnName: { type: "string", description: "現在の列名 (識別子)" },
+        newName: { type: "string", description: "rename 後の新列名 (任意)" },
+        options: {
+          type: "object",
+          description: "更新するプロパティを camelCase で指定。指定キーのみ更新、他はそのまま。未知キーは無視 (結果に unknownKeys として返却)",
+          additionalProperties: true,
+        },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "columnName"],
+    },
+  },
+  {
     name: "appsheet_set_view_options",
     description:
       "既存 view の任意プロパティを部分更新する汎用ツール。Settings JSON と ViewDefinition を PATCH 的に同時更新。\n\n## 編集対象\n- **トップレベル**: newName (rename) / tableName / position / showIf / displayName / description\n- **ViewDefinition (options)**: create_view と同じ camelCase キー語彙。指定したキーのみ上書き、他はそのまま。\n\n## options の主な対応キー (camelCase → AppSheet 内部 PascalCase)\n- table: columnWidth / enableQuickEdit / columnOrder / sortBy / groupBy / groupAggregate\n- card / deck: imageShape / mainDeckImageColumn / primaryDeckHeaderColumn / secondaryDeckHeaderColumn / deckSummaryColumn / deckNestedTableColumn / showActionBar\n- detail: useCardLayout / mainSlideshowImageColumn / detailContentColumn / headerColumns / quickEditColumns / columnOrder / imageStyle / displayMode (Side-by-side 等) / maxNestedRows / slideshowMode / desktopSplitMode / useDesktopMultiColumn\n- form: pageStyle / formStyle / columnOrder / formFooterStyle (Bottom/Top) / autoSave / autoReopen / finishView / maxNestedRows / audioInput\n- dashboard: viewEntries / interactiveMode / showTabs\n- chart: chartType / chartColumns / groupAggregate / trendLine / showLegend\n- 共通: icon / menuOrder / sortBy / groupBy\n\n## 値の注意\n- displayMode は AppSheet 内部表記必須: Automatic / Normal / Centered / 'No headings' / 'Side-by-side'\n- imageShape: 'Square Image' / 'Round Image' / 'Full Image'\n- formStyle: Automatic / Default / 'Side-by-side'\n\nデフォルト dry-run。",
@@ -1101,6 +1124,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return setViewDisplayMode(args as Parameters<typeof setViewDisplayMode>[0]);
     case "appsheet_set_view_options":
       return setViewOptions(args as Parameters<typeof setViewOptions>[0]);
+    case "appsheet_set_column_options":
+      return setColumnOptions(args as Parameters<typeof setColumnOptions>[0]);
     case "appsheet_set_security_filter":
       return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
     case "appsheet_promote_to_ref":

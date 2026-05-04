@@ -3464,3 +3464,208 @@ export async function setViewOptions(args: {
   const changeCount = Object.keys(changes).length;
   return { dryRun: false, applied: true, viewName: lookupName, changes, message: `✅ View options 更新完了 (${changeCount} 件)` };
 }
+
+// ===== Column Options =====
+// Attribute トップレベル: boolean フラグ
+const COLUMN_TOPLEVEL_BOOL: Record<string, string> = {
+  isKey: "IsKey",
+  isLabel: "IsLabel",
+  isHidden: "IsHidden",
+  searchable: "Searchable",
+  isScannable: "IsScannable",
+  isNfcScannable: "IsNfcScannable",
+  isSensitive: "IsSensitive",
+  isRequired: "IsRequired",
+  resetOnEdit: "ResetOnEdit",
+  defEdit: "DefEdit",
+};
+
+// Attribute トップレベル: 文字列 (式でない)
+const COLUMN_TOPLEVEL_STR: Record<string, string> = {
+  description: "Description",
+  displayName: "DisplayName",
+};
+
+// Attribute トップレベル: 式 (= prefix を normalize)
+const COLUMN_TOPLEVEL_FORMULA: Record<string, string> = {
+  initialValue: "Default",
+  appFormula: "AppFormula",
+};
+
+// TypeAuxData: 式
+const COLUMN_AUX_FORMULA: Record<string, string> = {
+  showIf: "Show_If",
+  validIf: "Valid_If",
+  errorMessageIfInvalid: "Error_Message_If_Invalid",
+  requiredIf: "Required_If",
+  editableIf: "Editable_If",
+  resetIf: "Reset_If",
+  suggestedValues: "Suggested_Values",
+};
+
+// TypeAuxData: 文字列 (式でない)
+const COLUMN_AUX_STR: Record<string, string> = {
+  yesLabel: "YesLabel",
+  noLabel: "NoLabel",
+  inputMode: "InputMode",
+  externalRelationshipName: "RelationshipName",
+  referencedTableName: "ReferencedTableName",
+};
+
+// TypeAuxData: boolean
+const COLUMN_AUX_BOOL: Record<string, string> = {
+  isPartOf: "IsAPartOf",  // "A" は大文字 (AppSheet 内部表記)
+};
+
+// 式更新時に削除するコンパイル済みキャッシュ
+// [optKey, location, fieldName]
+const FORMULA_CACHE_INVALIDATIONS: Array<[string, "topLevel" | "internalQualifier", string]> = [
+  ["appFormula", "internalQualifier", "AppFormulaExpression"],
+  ["initialValue", "topLevel", "DefaultExpression"],
+  ["showIf", "internalQualifier", "Show_If_AppEval"],
+  ["validIf", "internalQualifier", "Valid_If_AppEval"],
+  ["requiredIf", "internalQualifier", "Required_If_AppEval"],
+  ["editableIf", "internalQualifier", "Editable_If_AppEval"],
+  ["resetIf", "internalQualifier", "Reset_If_AppEval"],
+];
+
+export async function setColumnOptions(args: {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  columnName: string;
+  newName?: string;
+  options?: Record<string, unknown>;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  table: string;
+  column: string;
+  changes: Record<string, { before: unknown; after?: unknown }>;
+  unknownKeys: string[];
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+  const attr = findAttribute(app, args.tableName, args.columnName);
+
+  const opts = args.options ?? {};
+  const changes: Record<string, { before: unknown; after?: unknown }> = {};
+  const unknownKeys: string[] = [];
+
+  const allMaps: Array<Record<string, string>> = [
+    COLUMN_TOPLEVEL_BOOL, COLUMN_TOPLEVEL_STR, COLUMN_TOPLEVEL_FORMULA,
+    COLUMN_AUX_FORMULA, COLUMN_AUX_STR, COLUMN_AUX_BOOL,
+  ];
+  const knownKeys = new Set<string>();
+  for (const m of allMaps) Object.keys(m).forEach((k) => knownKeys.add(k));
+
+  // 現在の TypeAuxData を解析 (before 値抽出のため)
+  const currentAuxRaw = (attr.TypeAuxData ?? "{}") as string;
+  let currentAux: Record<string, unknown>;
+  try { currentAux = JSON.parse(currentAuxRaw); } catch { currentAux = {}; }
+
+  if (args.newName !== undefined && args.newName !== attr.Name) {
+    changes["Name"] = { before: attr.Name };
+  }
+
+  for (const optKey of Object.keys(opts)) {
+    if (!knownKeys.has(optKey)) {
+      unknownKeys.push(optKey);
+      continue;
+    }
+    let before: unknown;
+    if (optKey in COLUMN_TOPLEVEL_BOOL) before = attr[COLUMN_TOPLEVEL_BOOL[optKey]];
+    else if (optKey in COLUMN_TOPLEVEL_STR) before = attr[COLUMN_TOPLEVEL_STR[optKey]];
+    else if (optKey in COLUMN_TOPLEVEL_FORMULA) before = attr[COLUMN_TOPLEVEL_FORMULA[optKey]];
+    else if (optKey in COLUMN_AUX_FORMULA) before = currentAux[COLUMN_AUX_FORMULA[optKey]];
+    else if (optKey in COLUMN_AUX_STR) before = currentAux[COLUMN_AUX_STR[optKey]];
+    else if (optKey in COLUMN_AUX_BOOL) before = currentAux[COLUMN_AUX_BOOL[optKey]];
+    changes[optKey] = { before };
+  }
+
+  if (Object.keys(changes).length === 0) {
+    let msg = "変更なし（指定なし or 既に同値）";
+    if (unknownKeys.length) msg += ` / 未知キー無視: ${unknownKeys.join(', ')}`;
+    return { dryRun: !args.apply, applied: false, table: args.tableName, column: args.columnName, changes: {}, unknownKeys, message: msg };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const t = findAttribute(a, args.tableName, args.columnName);
+    if (args.newName !== undefined && args.newName !== t.Name) {
+      t.Name = args.newName;
+    }
+
+    const auxRaw = (t.TypeAuxData ?? "{}") as string;
+    let aux: Record<string, unknown>;
+    try { aux = JSON.parse(auxRaw); } catch { aux = {}; }
+    let auxModified = false;
+
+    for (const [optKey, value] of Object.entries(opts)) {
+      if (!knownKeys.has(optKey)) continue;
+      if (optKey in COLUMN_TOPLEVEL_BOOL) {
+        t[COLUMN_TOPLEVEL_BOOL[optKey]] = value;
+      } else if (optKey in COLUMN_TOPLEVEL_STR) {
+        t[COLUMN_TOPLEVEL_STR[optKey]] = value;
+      } else if (optKey in COLUMN_TOPLEVEL_FORMULA) {
+        const fieldName = COLUMN_TOPLEVEL_FORMULA[optKey];
+        t[fieldName] = (typeof value === 'string' && value.length > 0) ? normalizeFormula(value) : value;
+      } else if (optKey in COLUMN_AUX_FORMULA) {
+        const fieldName = COLUMN_AUX_FORMULA[optKey];
+        aux[fieldName] = (typeof value === 'string' && value.length > 0) ? normalizeFormula(value) : value;
+        auxModified = true;
+      } else if (optKey in COLUMN_AUX_STR) {
+        aux[COLUMN_AUX_STR[optKey]] = value;
+        auxModified = true;
+      } else if (optKey in COLUMN_AUX_BOOL) {
+        aux[COLUMN_AUX_BOOL[optKey]] = value;
+        auxModified = true;
+      }
+    }
+
+    if (auxModified) t.TypeAuxData = JSON.stringify(aux);
+
+    // コンパイル済みキャッシュ無効化 (式が変わった場合 AppSheet に再コンパイルさせる)
+    const iqRaw = t.InternalQualifier;
+    const iq = (iqRaw && typeof iqRaw === 'object') ? (iqRaw as Record<string, unknown>) : null;
+    for (const [optKey, location, cacheField] of FORMULA_CACHE_INVALIDATIONS) {
+      if (!(optKey in opts)) continue;
+      if (location === "topLevel") delete t[cacheField];
+      else if (iq) delete iq[cacheField];
+    }
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    let msg = "dry-run。apply: true で実際送信。";
+    if (unknownKeys.length) msg += ` (未知キー: ${unknownKeys.join(', ')})`;
+    return { dryRun: true, applied: false, table: args.tableName, column: args.columnName, changes, unknownKeys, message: msg };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const lookupName = args.newName ?? args.columnName;
+  const refreshedAttr = findAttribute(refreshed, args.tableName, lookupName);
+  const refreshedAuxRaw = (refreshedAttr.TypeAuxData ?? "{}") as string;
+  let refreshedAux: Record<string, unknown>;
+  try { refreshedAux = JSON.parse(refreshedAuxRaw); } catch { refreshedAux = {}; }
+
+  if ("Name" in changes) changes["Name"].after = refreshedAttr.Name;
+  for (const optKey of Object.keys(opts)) {
+    if (!knownKeys.has(optKey)) continue;
+    let after: unknown;
+    if (optKey in COLUMN_TOPLEVEL_BOOL) after = refreshedAttr[COLUMN_TOPLEVEL_BOOL[optKey]];
+    else if (optKey in COLUMN_TOPLEVEL_STR) after = refreshedAttr[COLUMN_TOPLEVEL_STR[optKey]];
+    else if (optKey in COLUMN_TOPLEVEL_FORMULA) after = refreshedAttr[COLUMN_TOPLEVEL_FORMULA[optKey]];
+    else if (optKey in COLUMN_AUX_FORMULA) after = refreshedAux[COLUMN_AUX_FORMULA[optKey]];
+    else if (optKey in COLUMN_AUX_STR) after = refreshedAux[COLUMN_AUX_STR[optKey]];
+    else if (optKey in COLUMN_AUX_BOOL) after = refreshedAux[COLUMN_AUX_BOOL[optKey]];
+    if (changes[optKey]) changes[optKey].after = after;
+  }
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  let msg = `✅ Column options 更新完了 (${Object.keys(changes).length} 件)`;
+  if (unknownKeys.length) msg += ` / 未知キー無視: ${unknownKeys.join(', ')}`;
+  return { dryRun: false, applied: true, table: args.tableName, column: lookupName, changes, unknownKeys, message: msg };
+}
