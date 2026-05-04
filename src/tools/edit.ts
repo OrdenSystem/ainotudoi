@@ -829,14 +829,23 @@ export async function removeBot(args: {
   const eventName = bot.EventName as string | undefined;
   const processName = bot.ProcessName as string | undefined;
 
-  // 紐づく Process の Nodes が参照する Task 名を集める
+  // 紐づく Process の Nodes が参照する Task 名を集める。
+  // RunActionNode は n.Action (DataActions 名) / TaskNode は n.Task (Behavior.Tasks 名)。
+  // IfElseNode の IfNodes / ElseNodes 配下も再帰的にスキャン。
   const taskNamesToRemove = new Set<string>();
+  const collectTaskRefs = (nodes: Array<Record<string, unknown>>): void => {
+    for (const n of nodes) {
+      if (typeof n.Task === "string") taskNamesToRemove.add(n.Task);
+      // RunActionNode の Action は DataActions 名なので Tasks には入っていないが、
+      // 念のため保持 (将来的に名前空間がぶつかった場合の安全策)。
+      if (typeof n.Action === "string") taskNamesToRemove.add(n.Action);
+      if (Array.isArray(n.IfNodes)) collectTaskRefs(n.IfNodes as Array<Record<string, unknown>>);
+      if (Array.isArray(n.ElseNodes)) collectTaskRefs(n.ElseNodes as Array<Record<string, unknown>>);
+    }
+  };
   if (processName) {
     const proc = processes.find((p) => p.Name === processName);
-    const nodes = (proc?.Nodes ?? []) as Array<Record<string, unknown>>;
-    for (const n of nodes) {
-      if (typeof n.Action === "string") taskNamesToRemove.add(n.Action);
-    }
+    collectTaskRefs((proc?.Nodes ?? []) as Array<Record<string, unknown>>);
   }
 
   bots.splice(botIdx, 1);
@@ -2540,6 +2549,25 @@ export async function setCallScriptTask(args: {
   };
 }
 
+// MCP 経由で string[] 引数が string 1 本で届くケースに対応するヘルパ。
+// JSON 配列文字列・CSV・改行区切り のいずれも受け付ける。
+function coerceStringArray(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value !== "string") return [];
+  const trimmed = value.trim();
+  if (trimmed === "") return [];
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed.map(String);
+    } catch {
+      // JSON parse 失敗時は CSV にフォールバック
+    }
+  }
+  return trimmed.split(/[,\n]+/).map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
 // ===== addSendEmailTask =====
 // Email Task ($type=AppWorkflowActionEmail) を Behavior.Tasks に追加し、
 // Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Email) を append
@@ -2589,16 +2617,20 @@ export async function addSendEmailTask(args: {
   const taskComponentId = generateComponentId();
   const nodeComponentId = generateComponentId();
   const stepName = args.stepName ?? args.taskName;
+  // MCP 経由で string[] が string で届くケースにも対応 (JSON 配列文字列 / CSV / 改行区切り)
+  const toList = coerceStringArray(args.toList);
+  const ccList = coerceStringArray(args.ccList);
+  const bccList = coerceStringArray(args.bccList);
 
   const newTask: Record<string, unknown> = {
     $type: "Jeenee.DataTypes.AppWorkflowActionEmail, Jeenee.DataTypes",
     ExprLookup: {},
     To: "",
-    ToList: args.toList ?? [],
+    ToList: toList,
     CC: "",
-    CCList: args.ccList ?? [],
+    CCList: ccList,
     BCC: "",
-    BCCList: args.bccList ?? [],
+    BCCList: bccList,
     ReplyTo: args.replyTo ?? null,
     FromAddress: args.fromAddress ?? "",
     FromDisplay: args.fromDisplay ?? null,
@@ -2676,7 +2708,7 @@ export async function addSendEmailTask(args: {
   if (!args.apply) {
     return {
       dryRun: true, applied: false, taskName: args.taskName, processName: args.processName,
-      message: `dry-run。Email Task '${args.taskName}' (To: ${(args.toList ?? []).join(',')}) と Process '${args.processName}' への TaskNode を構築。apply: true で送信。`,
+      message: `dry-run。Email Task '${args.taskName}' (To: ${toList.join(',')}) と Process '${args.processName}' への TaskNode を構築。apply: true で送信。`,
     };
   }
 
@@ -2960,7 +2992,6 @@ export async function removeStep(args: {
   const linkedTaskName = (nodeType === "TaskNode") ? (removingNode.Task as string) : undefined;
 
   // Tasks の他参照があるか調査
-  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
   let removeOrphanedTask = false;
   if (linkedTaskName && (args.removeOrphanedTask ?? true)) {
     // 全 Process の全 Nodes から TaskNode で linkedTaskName を参照しているもの (自分以外) を探す
