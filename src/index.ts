@@ -80,6 +80,7 @@ import {
   addWebhookTask,
   addBranchStep,
   removeStep,
+  setBotTrigger,
 } from "./tools/edit.js";
 
 const tools: Tool[] = [
@@ -766,6 +767,33 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_set_bot_trigger",
+    description:
+      "既存 Bot の Trigger (AppEvent) を編集する。eventType の切替 (DataChange ↔ Scheduled)、ChangeEvent 種別変更、cron / timeZone 編集、filterCondition 編集、bot.Disabled の切替に対応。\n\n## 必須\n- botName: 編集対象 Bot 名\n\n## 任意 (どれか 1 つ以上)\n- eventType: 'ADDS_ONLY' / 'UPDATES_ONLY' / 'DELETES_ONLY' / 'ADDS_AND_UPDATES' / 'ADDS_UPDATES_DELETES' / 'Scheduled'\n- filterCondition: 条件式 ('=' 自動付与)。空文字は変更なし扱い\n- tableName: Schedule の Table or DataChange の SchemaName 解決対象\n- scheduleConfig: { cron, timeZone, forEachRowInTable, region } の部分更新\n- disabled: Bot 有効/無効\n\n## 切替時のルール\n- DataChange → Scheduled: scheduleConfig.cron が必須\n- Scheduled → DataChange: eventType (ADDS_ONLY 等) が必須\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        botName: { type: "string" },
+        eventType: { type: "string", enum: ["ADDS_ONLY", "UPDATES_ONLY", "DELETES_ONLY", "ADDS_AND_UPDATES", "ADDS_UPDATES_DELETES", "Scheduled"] },
+        filterCondition: { type: "string", description: "条件式。'=' 自動付与。空文字は変更なし" },
+        tableName: { type: "string" },
+        scheduleConfig: {
+          type: "object",
+          properties: {
+            cron: { type: "string", description: "5 フィールド cron。例: '0 12 1 * *' (月初 12:00)" },
+            timeZone: { type: "string", description: "Windows TZ。例: 'Tokyo Standard Time'" },
+            forEachRowInTable: { type: "boolean" },
+            region: { type: "string" },
+          },
+        },
+        disabled: { type: "boolean" },
+        apply: { type: "boolean" },
+      },
+      required: ["botName"],
+    },
+  },
+  {
     name: "appsheet_set_column_options",
     description:
       "既存列の任意プロパティを部分更新する汎用ツール。Column の attribute トップレベル / TypeAuxData (JSON) / InternalQualifier (コンパイル済みキャッシュ) を適切な箇所に振り分けて PATCH 的に同時更新。\n\n## 編集対象 (camelCase キー → AppSheet 内部表記)\n### Display 系\n- displayName / description (Column edit screen の Display name / Description)\n\n### Other Properties (boolean フラグ)\n- isLabel / isHidden / searchable / isScannable / isNfcScannable / isSensitive\n\n### Update Behavior\n- isKey / isRequired / resetOnEdit / defEdit (Editable?)\n\n### Auto Compute\n- appFormula (App formula。'=' が無ければ自動付与) / initialValue (Default。式は '=' 付与)\n\n### Data Validity (式)\n- validIf / errorMessageIfInvalid / requiredIf / editableIf / resetIf / showIf / suggestedValues\n  (式は '=' を自動 normalize、null で削除)\n\n### Type-specific (TypeAuxData)\n- yesLabel / noLabel (Yes/No 型)\n- inputMode (Ref 型: 'Auto' / 'Buttons' / 'Dropdown')\n- isPartOf (Ref 型: 'Is a part of?' boolean)\n- referencedTableName (Ref 型: Source table)\n- externalRelationshipName (Ref 型: External relationship name)\n\n### Rename\n- newName で列名変更 (注意: 他箇所で参照されている場合は手動修正が必要)\n\n## キャッシュ無効化\n式系を更新したとき、対応する InternalQualifier の AppEval キャッシュを自動削除して AppSheet に再コンパイルさせる。\n\nデフォルト dry-run。",
@@ -1236,6 +1264,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addBranchStep(args as Parameters<typeof addBranchStep>[0]);
     case "appsheet_remove_step":
       return removeStep(args as Parameters<typeof removeStep>[0]);
+    case "appsheet_set_bot_trigger":
+      return setBotTrigger(args as Parameters<typeof setBotTrigger>[0]);
     case "appsheet_set_security_filter":
       return setSecurityFilter(args as Parameters<typeof setSecurityFilter>[0]);
     case "appsheet_promote_to_ref":

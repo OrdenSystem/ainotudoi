@@ -3244,6 +3244,297 @@ export async function createBot(args: {
   };
 }
 
+// ===== setBotTrigger =====
+// 既存 Bot の Event (Trigger) を編集する。
+// - eventType の切替 (DataChange ↔ Scheduled)
+// - DataChange 系: ChangeEvent 種別 (ADDS_ONLY 等) と filterCondition の編集
+// - Scheduled: cron / timeZone / forEachRowInTable / filterCondition / table の編集
+// - bot.Disabled の切替
+export async function setBotTrigger(args: {
+  appId?: string;
+  appName?: string;
+  botName: string;
+  // 切替後の eventType。省略時は現状維持。
+  eventType?: "ADDS_ONLY" | "UPDATES_ONLY" | "DELETES_ONLY" | "ADDS_AND_UPDATES" | "ADDS_UPDATES_DELETES" | "Scheduled";
+  // null クリアは許容しない (AppSheet 側 NULL 不可)。空文字 or 省略時は変更なし。
+  filterCondition?: string;
+  // DataChange の SchemaName 解決 / Scheduled の Table 切替に使用。省略時は現状維持。
+  tableName?: string;
+  // Scheduled の場合のみ部分更新 (eventType=Scheduled or 既に Schedule の場合)
+  scheduleConfig?: {
+    cron?: string;
+    timeZone?: string;
+    forEachRowInTable?: boolean;
+    region?: string;
+  };
+  // Bot の有効/無効を切替
+  disabled?: boolean;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  botName: string;
+  eventName: string;
+  before: { eventType: string; subType?: string; filterCondition: unknown; table?: string; schedule?: { cron?: string; timeZone?: string; forEachRowInTable?: boolean; region?: string }; disabled: boolean };
+  after?: { eventType: string; subType?: string; filterCondition: unknown; table?: string; schedule?: { cron?: string; timeZone?: string; forEachRowInTable?: boolean; region?: string }; disabled: boolean };
+  changes: string[];
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+
+  const bots = (behavior.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+  const events = (behavior.AppEvents as Array<Record<string, unknown>> | undefined) ?? [];
+
+  const targetBot = bots.find((b) => b.Name === args.botName);
+  if (!targetBot) {
+    const known = bots.map((b) => b.Name as string).join(", ");
+    throw new Error(`Bot '${args.botName}' が見つかりません。既知: ${known}`);
+  }
+
+  const eventName = targetBot.EventName as string;
+  if (!eventName) throw new Error(`Bot '${args.botName}' に EventName がありません`);
+
+  const targetEvent = events.find((e) => e.Name === eventName);
+  if (!targetEvent) throw new Error(`Event '${eventName}' が見つかりません (Bot '${args.botName}' から参照)`);
+
+  const eventDef = targetEvent.AppEventDefinition as Record<string, unknown> | undefined;
+  if (!eventDef) throw new Error(`Event '${eventName}' に AppEventDefinition がありません`);
+
+  // 現状読み取り
+  const currentOuterType = (targetEvent.EventType as string) ?? "Change"; // "Change" or "Scheduled"
+  const currentIsSchedule = currentOuterType === "Scheduled";
+  const currentChangeEvent = !currentIsSchedule ? (eventDef.ChangeEvent as string | undefined) : undefined;
+  const currentSchemaName = !currentIsSchedule ? (eventDef.SchemaName as string | undefined) : undefined;
+  const currentScheduleTable = currentIsSchedule ? (eventDef.Table as string | undefined) : undefined;
+  const currentSchedule = currentIsSchedule
+    ? {
+        cron: eventDef.Schedule as string | undefined,
+        timeZone: eventDef.TimeZone as string | undefined,
+        forEachRowInTable: eventDef.ForEachRowInTable as boolean | undefined,
+        region: eventDef.Region as string | undefined,
+      }
+    : undefined;
+  const currentFilterCondition = currentIsSchedule
+    ? (eventDef.FilterCondition as string | undefined)
+    : (targetEvent.FilterCondition as string | undefined);
+
+  // 目的の eventType 決定
+  const requestedEventType = args.eventType;
+  const targetIsSchedule = requestedEventType === "Scheduled" ? true : (requestedEventType ? false : currentIsSchedule);
+  const isTypeSwitch = currentIsSchedule !== targetIsSchedule;
+
+  // バリデーション
+  if (targetIsSchedule && isTypeSwitch && !args.scheduleConfig?.cron) {
+    throw new Error("DataChange → Scheduled へ切替時は scheduleConfig.cron が必須");
+  }
+  if (!targetIsSchedule && isTypeSwitch && !requestedEventType) {
+    throw new Error("Scheduled → DataChange へ切替時は eventType (ADDS_ONLY 等) が必須");
+  }
+
+  // DataChange の SchemaName 解決 (type 切替 or table 変更時)
+  let resolvedSchemaName: string | undefined = currentSchemaName;
+  if (!targetIsSchedule && (isTypeSwitch || args.tableName)) {
+    const table = args.tableName ?? currentScheduleTable; // Schedule から切替時は元 Table を流用
+    if (!table) throw new Error("DataChange の対象テーブルを解決できません。tableName を指定してください");
+    const schemas = app.AppData?.DataSchemas ?? [];
+    const schema =
+      schemas.find((s) => s.AutoSchemaFrom === table) ??
+      schemas.find((s) => s.Name === `${table}_Schema`) ??
+      schemas.find((s) => s.Name === table);
+    if (!schema) throw new Error(`テーブル '${table}' の Schema が見つかりません`);
+    resolvedSchemaName = schema.Name;
+  }
+
+  // before スナップショット
+  const before = {
+    eventType: currentIsSchedule ? "Scheduled" : "Change",
+    subType: currentIsSchedule ? undefined : currentChangeEvent,
+    filterCondition: currentFilterCondition,
+    table: currentIsSchedule ? currentScheduleTable : (currentSchemaName ? schemaTable(app, currentSchemaName) : undefined),
+    schedule: currentSchedule,
+    disabled: (targetBot.Disabled as boolean) ?? false,
+  };
+
+  // 変更検出
+  const changes: string[] = [];
+  if (isTypeSwitch) changes.push(`EventType: ${before.eventType} → ${targetIsSchedule ? "Scheduled" : "Change"}`);
+  if (!targetIsSchedule && requestedEventType && requestedEventType !== currentChangeEvent) {
+    changes.push(`ChangeEvent: ${currentChangeEvent ?? "(none)"} → ${requestedEventType}`);
+  }
+  if (args.filterCondition !== undefined && args.filterCondition !== "") {
+    const newFc = normalizeFormula(args.filterCondition);
+    if (newFc !== currentFilterCondition) changes.push(`FilterCondition: ${currentFilterCondition ?? "(none)"} → ${newFc}`);
+  }
+  if (targetIsSchedule && args.scheduleConfig) {
+    const sc = args.scheduleConfig;
+    if (sc.cron !== undefined && sc.cron !== currentSchedule?.cron) changes.push(`Schedule(cron): ${currentSchedule?.cron ?? "(none)"} → ${sc.cron}`);
+    if (sc.timeZone !== undefined && sc.timeZone !== currentSchedule?.timeZone) changes.push(`TimeZone: ${currentSchedule?.timeZone ?? "(none)"} → ${sc.timeZone}`);
+    if (sc.forEachRowInTable !== undefined && sc.forEachRowInTable !== currentSchedule?.forEachRowInTable) changes.push(`ForEachRowInTable: ${currentSchedule?.forEachRowInTable} → ${sc.forEachRowInTable}`);
+    if (sc.region !== undefined && sc.region !== currentSchedule?.region) changes.push(`Region: ${currentSchedule?.region ?? "(none)"} → ${sc.region}`);
+  }
+  if (targetIsSchedule && args.tableName && args.tableName !== currentScheduleTable) {
+    changes.push(`Table: ${currentScheduleTable ?? "(none)"} → ${args.tableName}`);
+  }
+  if (!targetIsSchedule && args.tableName && resolvedSchemaName !== currentSchemaName) {
+    changes.push(`SchemaName: ${currentSchemaName ?? "(none)"} → ${resolvedSchemaName}`);
+  }
+  if (args.disabled !== undefined && args.disabled !== before.disabled) {
+    changes.push(`Disabled: ${before.disabled} → ${args.disabled}`);
+  }
+
+  if (changes.length === 0) {
+    return {
+      dryRun: !args.apply,
+      applied: false,
+      botName: args.botName,
+      eventName,
+      before,
+      changes: [],
+      message: "変更なし（指定値が現状と同じ or 何も指定されていない）",
+    };
+  }
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません（リトライ時）");
+    const bs = (beh.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+    const es = (beh.AppEvents as Array<Record<string, unknown>> | undefined) ?? [];
+    const tBot = bs.find((b) => b.Name === args.botName);
+    const tEvent = es.find((e) => e.Name === eventName);
+    if (!tBot || !tEvent) throw new Error("Bot/Event がリトライ時に見つかりません");
+    const tEventDef = tEvent.AppEventDefinition as Record<string, unknown> | undefined;
+    if (!tEventDef) throw new Error("AppEventDefinition がリトライ時に見つかりません");
+
+    // bot.Disabled
+    if (args.disabled !== undefined) tBot.Disabled = args.disabled;
+
+    if (isTypeSwitch && targetIsSchedule) {
+      // DataChange → Scheduled: AppEventDefinition を完全に作り直し
+      const sc = args.scheduleConfig!;
+      const tableForSchedule = args.tableName ?? schemaTable(a, currentSchemaName ?? "") ?? "";
+      const newDef: Record<string, unknown> = {
+        $type: "Jeenee.DataTypes.AppScheduledEventDefinition, Jeenee.DataTypes",
+        ExprLookup: {},
+        RecurrentRuleName: null,
+        Schedule: sc.cron,
+        TimeZone: sc.timeZone ?? "Tokyo Standard Time",
+        Table: tableForSchedule,
+        FilterCondition: args.filterCondition ? normalizeFormula(args.filterCondition) : "true",
+        ForEachRowInTable: sc.forEachRowInTable ?? true,
+        Region: sc.region ?? "",
+        IsValid: true,
+        Visibility: "ALWAYS",
+        DisableAutoUpdate: false,
+        ComponentId: tEventDef.ComponentId, // 既存 ComponentId を継承
+      };
+      tEvent.AppEventDefinition = newDef;
+      tEvent.EventType = "Scheduled";
+      tEvent.FilterCondition = null; // outer は Schedule では null
+      tEvent._version = 7;
+    } else if (isTypeSwitch && !targetIsSchedule) {
+      // Scheduled → DataChange: AppEventDefinition を完全に作り直し
+      const newDef: Record<string, unknown> = {
+        $type: "Jeenee.DataTypes.AppChangeEventDefinition, Jeenee.DataTypes",
+        ExprLookup: {},
+        ChangeEvent: requestedEventType!,
+        SchemaName: resolvedSchemaName!,
+        IsValid: true,
+        Visibility: "ALWAYS",
+        DisableAutoUpdate: false,
+        ComponentId: tEventDef.ComponentId,
+      };
+      tEvent.AppEventDefinition = newDef;
+      tEvent.EventType = "Change";
+      tEvent.FilterCondition = args.filterCondition ? normalizeFormula(args.filterCondition) : "=TRUE";
+      tEvent._version = 6;
+    } else if (targetIsSchedule) {
+      // Scheduled の部分更新
+      if (args.scheduleConfig?.cron !== undefined) tEventDef.Schedule = args.scheduleConfig.cron;
+      if (args.scheduleConfig?.timeZone !== undefined) tEventDef.TimeZone = args.scheduleConfig.timeZone;
+      if (args.scheduleConfig?.forEachRowInTable !== undefined) tEventDef.ForEachRowInTable = args.scheduleConfig.forEachRowInTable;
+      if (args.scheduleConfig?.region !== undefined) tEventDef.Region = args.scheduleConfig.region;
+      if (args.tableName !== undefined) tEventDef.Table = args.tableName;
+      if (args.filterCondition !== undefined && args.filterCondition !== "") {
+        tEventDef.FilterCondition = normalizeFormula(args.filterCondition);
+      }
+    } else {
+      // DataChange の部分更新
+      if (requestedEventType && requestedEventType !== "Scheduled") tEventDef.ChangeEvent = requestedEventType;
+      if (args.tableName !== undefined && resolvedSchemaName) tEventDef.SchemaName = resolvedSchemaName;
+      if (args.filterCondition !== undefined && args.filterCondition !== "") {
+        tEvent.FilterCondition = normalizeFormula(args.filterCondition);
+      }
+    }
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      botName: args.botName,
+      eventName,
+      before,
+      changes,
+      message: `dry-run。Bot '${args.botName}' の Trigger を更新 (${changes.length} 件)。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedBeh = (refreshed as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  const refreshedBots = (refreshedBeh?.AppBots as Array<Record<string, unknown>> | undefined) ?? [];
+  const refreshedEvents = (refreshedBeh?.AppEvents as Array<Record<string, unknown>> | undefined) ?? [];
+  const refreshedBot = refreshedBots.find((b) => b.Name === args.botName);
+  const refreshedEvent = refreshedEvents.find((e) => e.Name === eventName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  let after: typeof before | undefined;
+  if (refreshedEvent) {
+    const rDef = refreshedEvent.AppEventDefinition as Record<string, unknown> | undefined;
+    const rIsSchedule = (refreshedEvent.EventType as string) === "Scheduled";
+    after = {
+      eventType: rIsSchedule ? "Scheduled" : "Change",
+      subType: rIsSchedule ? undefined : (rDef?.ChangeEvent as string | undefined),
+      filterCondition: rIsSchedule ? (rDef?.FilterCondition as string | undefined) : (refreshedEvent.FilterCondition as string | undefined),
+      table: rIsSchedule
+        ? (rDef?.Table as string | undefined)
+        : (rDef?.SchemaName ? schemaTable(refreshed, rDef.SchemaName as string) : undefined),
+      schedule: rIsSchedule
+        ? {
+            cron: rDef?.Schedule as string | undefined,
+            timeZone: rDef?.TimeZone as string | undefined,
+            forEachRowInTable: rDef?.ForEachRowInTable as boolean | undefined,
+            region: rDef?.Region as string | undefined,
+          }
+        : undefined,
+      disabled: (refreshedBot?.Disabled as boolean) ?? false,
+    };
+  }
+
+  return {
+    dryRun: false,
+    applied: true,
+    botName: args.botName,
+    eventName,
+    before,
+    after,
+    changes,
+    message: `✅ Bot '${args.botName}' の Trigger 更新完了 (${changes.length} 件)`,
+  };
+}
+
+// AppEvent の SchemaName から元テーブル名を逆引きするヘルパ
+function schemaTable(app: AppDef, schemaName: string): string | undefined {
+  const schemas = app.AppData?.DataSchemas ?? [];
+  const s = schemas.find((s) => s.Name === schemaName);
+  return s?.AutoSchemaFrom ?? undefined;
+}
+
 export async function addOpenUrlAction(args: {
   appId?: string;
   appName?: string;
