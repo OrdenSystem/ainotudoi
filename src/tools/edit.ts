@@ -2568,6 +2568,204 @@ function coerceStringArray(value: unknown): string[] {
   return trimmed.split(/[,\n]+/).map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
+// ===== addAiTask =====
+// AI Task (Summarize / Extract / Categorize / ExtractRows) を Behavior.Tasks に追加し、
+// Process.Nodes に TaskNode を append。タイプごとに $type / _version / 固有フィールドが異なる。
+//
+// HAR 観察 (samples/add-AITask*.har) で判明した構造:
+// - Summarize:     $type=AppWorkflowActionAiTaskSummarize / Type=AISummarize / _version=14
+//                  InputColumns[] / OutputColumn / AdditionalInstructions / SaveToTable
+// - Extract:       $type=AppWorkflowActionAiTaskExtract / Type=AIExtract / _version=8
+//                  ImageColumn / Description / OutputTableColumns[] / OutputCustomSchema / SaveToTable
+// - Categorize:    $type=AppWorkflowActionAiTaskCategorize / Type=AICategorize / _version=13
+//                  InputColumns[] / OutputColumn / AdditionalInstructions / SaveToTable
+// - ExtractRows:   $type=AppWorkflowActionAiTaskExtractTable / Type=AIExtractTable / _version=11
+//                  InputColumn (単数!) / TableNameToWriteTo / OutputTableColumns[] / AdditionalInstructions
+export async function addAiTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  tableName: string;
+  taskType: "Summarize" | "Extract" | "Categorize" | "ExtractRows";
+  // Summarize / Categorize 共通
+  inputColumns?: string[];          // Summarize / Categorize: 入力列の配列
+  outputColumn?: string;            // Summarize / Categorize: 出力列名 (1 列)
+  additionalInstructions?: string;  // Summarize / Categorize / ExtractRows: AI への追加指示
+  // Extract 固有
+  imageColumn?: string;             // Extract: 入力 (画像) 列名
+  description?: string;             // Extract: 抽出指示テキスト
+  // Extract / ExtractRows 共通
+  outputTableColumns?: string[];    // Extract / ExtractRows: 出力列名の配列
+  // ExtractRows 固有
+  inputColumn?: string;             // ExtractRows: 入力列 (単数)
+  tableNameToWriteTo?: string;      // ExtractRows: 出力先テーブル名
+  // 共通
+  saveToTable?: boolean;            // Summarize / Extract / Categorize: 出力をテーブルに保存
+  forEntireTable?: boolean;
+  stepName?: string;
+  outputTableName?: string;         // 省略時は auto ("${stepName} Output")
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  taskName: string;
+  taskType: string;
+  processName: string;
+  componentIds?: { task: string; node: string };
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+
+  if (tasks.find((t) => t.Name === args.taskName)) throw new Error(`Task '${args.taskName}' は既に存在します`);
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+
+  const stepName = args.stepName ?? args.taskName;
+  const outputTableName = args.outputTableName ?? `${stepName} Output`;
+
+  // タイプ別の構成情報
+  const TYPE_CONFIG: Record<string, { typeStr: string; actionType: string; version: number; classFqn: string }> = {
+    Summarize:   { typeStr: "AISummarize",   actionType: "AISummarize",   version: 14, classFqn: "Jeenee.DataTypes.AppWorkflowActionAiTaskSummarize, Jeenee.DataTypes" },
+    Extract:     { typeStr: "AIExtract",     actionType: "AIExtract",     version: 8,  classFqn: "Jeenee.DataTypes.AppWorkflowActionAiTaskExtract, Jeenee.DataTypes" },
+    Categorize:  { typeStr: "AICategorize",  actionType: "AICategorize",  version: 13, classFqn: "Jeenee.DataTypes.AppWorkflowActionAiTaskCategorize, Jeenee.DataTypes" },
+    ExtractRows: { typeStr: "AIExtractTable", actionType: "AIExtractTable", version: 11, classFqn: "Jeenee.DataTypes.AppWorkflowActionAiTaskExtractTable, Jeenee.DataTypes" },
+  };
+  const cfg = TYPE_CONFIG[args.taskType];
+  if (!cfg) throw new Error(`未対応の taskType: ${args.taskType}`);
+
+  // タイプ別バリデーション + 固有フィールド構築
+  const inputCols = coerceStringArray(args.inputColumns);
+  const outputTableCols = coerceStringArray(args.outputTableColumns);
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+
+  // 共通フィールド
+  const baseTask: Record<string, unknown> = {
+    $type: cfg.classFqn,
+    ExprLookup: {},
+    // タイプ固有フィールドが続く
+  };
+  // タイプ固有フィールド
+  if (args.taskType === "Summarize" || args.taskType === "Categorize") {
+    if (inputCols.length === 0) throw new Error(`${args.taskType} には inputColumns (1 件以上) が必要です`);
+    if (!args.outputColumn) throw new Error(`${args.taskType} には outputColumn が必要です`);
+    baseTask.InputColumns = inputCols;
+    baseTask.OutputColumn = args.outputColumn;
+    baseTask.AdditionalInstructions = args.additionalInstructions ?? "";
+    baseTask.SaveToTable = args.saveToTable ?? false;
+  } else if (args.taskType === "Extract") {
+    if (!args.imageColumn) throw new Error(`Extract には imageColumn が必要です`);
+    if (outputTableCols.length === 0) throw new Error(`Extract には outputTableColumns (1 件以上) が必要です`);
+    baseTask.ImageColumn = args.imageColumn;
+    baseTask.Description = args.description ?? "";
+    baseTask.OutputTableColumns = outputTableCols;
+    baseTask.OutputCustomSchema = {
+      ExprLookup: {},
+      Name: "AI Task Extract Output Schema",
+      Attributes: [],
+      AutoSchemaFrom: null,
+      IsAutoCreated: false,
+      IsDependent: false,
+      CreatedBy: null,
+      AutomationPurpose: 0,
+      IsValid: true,
+      Visibility: "NEVER",
+      DisableAutoUpdate: false,
+      ComponentId: null,
+    };
+    baseTask.SaveToTable = args.saveToTable ?? false;
+  } else if (args.taskType === "ExtractRows") {
+    if (!args.inputColumn) throw new Error(`ExtractRows には inputColumn (単数) が必要です`);
+    if (!args.tableNameToWriteTo) throw new Error(`ExtractRows には tableNameToWriteTo (出力先テーブル名) が必要です`);
+    if (outputTableCols.length === 0) throw new Error(`ExtractRows には outputTableColumns (1 件以上) が必要です`);
+    if (!dataSets.find((d) => d.Name === args.tableNameToWriteTo)) {
+      throw new Error(`tableNameToWriteTo '${args.tableNameToWriteTo}' が見つかりません`);
+    }
+    baseTask.InputColumn = args.inputColumn;
+    baseTask.TableNameToWriteTo = args.tableNameToWriteTo;
+    baseTask.OutputTableColumns = outputTableCols;
+    baseTask.AdditionalInstructions = args.additionalInstructions ?? "";
+  }
+
+  // 共通末尾フィールド
+  Object.assign(baseTask, {
+    Name: args.taskName,
+    Type: cfg.typeStr,
+    IsAiTask: true,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? false,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "App owner",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: cfg.version,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  });
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: cfg.actionType,
+    StepName: stepName,
+    OutputTableName: outputTableName,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(baseTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false, taskName: args.taskName, taskType: args.taskType, processName: args.processName,
+      message: `dry-run。AI Task '${args.taskName}' (${args.taskType}) と Process '${args.processName}' への TaskNode を構築。apply: true で送信。戻り値は [${stepName}].[<出力列名>] で参照可能。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !!created, taskName: args.taskName, taskType: args.taskType, processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created
+      ? `✅ AI Task '${args.taskName}' (${args.taskType}) 作成 + Process '${args.processName}' 連結完了`
+      : `⚠️ saveapp Success だが事後検証で Task 不在`,
+  };
+}
+
 // ===== addSendEmailTask =====
 // Email Task ($type=AppWorkflowActionEmail) を Behavior.Tasks に追加し、
 // Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Email) を append

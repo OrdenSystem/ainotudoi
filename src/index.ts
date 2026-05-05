@@ -71,6 +71,7 @@ import {
   removeSlice,
   addCallScriptTask,
   setCallScriptTask,
+  addAiTask,
   createTable,
   createView,
   setColumnYNLabels,
@@ -1053,6 +1054,35 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_ai_task",
+    description:
+      "AI Task (Summarize / Extract / Categorize / ExtractRows) を Behavior.Tasks に追加し、Process.Nodes に TaskNode を append。タイプごとに異なる固有フィールドを持つ。\n\n## 必須\n- processName / taskName / tableName / taskType\n\n## taskType ごとの追加必須\n- **Summarize**: inputColumns[] / outputColumn (要約: 列群 → 1 列)\n- **Extract**: imageColumn / outputTableColumns[] (画像 OCR → 列群)\n- **Categorize**: inputColumns[] / outputColumn (分類: 列群 → 1 列)\n- **ExtractRows**: inputColumn / tableNameToWriteTo / outputTableColumns[] (画像 → 別テーブルの行群へ書出し)\n\n## 任意\n- additionalInstructions: AI への追加指示テキスト (Summarize/Categorize/ExtractRows)\n- description: 抽出指示テキスト (Extract)\n- saveToTable: 出力をテーブルに保存 (Summarize/Extract/Categorize)\n- forEntireTable: テーブル全体に対して 1 回実行。デフォルト false\n- stepName: Process 内 Step 表示名。省略時は taskName\n- outputTableName: 戻り値スキーマ名。省略時は '${stepName} Output'\n\n## 戻り値の参照\nProcess 内で [<stepName>].[<出力列名>] で参照可能。\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        taskType: { type: "string", enum: ["Summarize", "Extract", "Categorize", "ExtractRows"] },
+        inputColumns: { type: "array", items: { type: "string" }, description: "Summarize / Categorize 用" },
+        outputColumn: { type: "string", description: "Summarize / Categorize 用 (1 列)" },
+        additionalInstructions: { type: "string" },
+        imageColumn: { type: "string", description: "Extract 用 (入力画像列)" },
+        description: { type: "string", description: "Extract 用 (抽出指示)" },
+        outputTableColumns: { type: "array", items: { type: "string" }, description: "Extract / ExtractRows 用 (出力列の配列)" },
+        inputColumn: { type: "string", description: "ExtractRows 用 (単数の入力列)" },
+        tableNameToWriteTo: { type: "string", description: "ExtractRows 用 (出力先テーブル名)" },
+        saveToTable: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        outputTableName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName", "taskType"],
+    },
+  },
+  {
     name: "appsheet_add_slice",
     description:
       "Slice (TableSlice) を新規追加する。クライアント側でフィルタ評価・列順カスタムができる。データ秘匿には使えない（→ Security Filter）。デフォルト dry-run。",
@@ -1357,6 +1387,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addCallScriptTask(args as Parameters<typeof addCallScriptTask>[0]);
     case "appsheet_set_call_script_task":
       return setCallScriptTask(args as Parameters<typeof setCallScriptTask>[0]);
+    case "appsheet_add_ai_task":
+      return addAiTask(args as Parameters<typeof addAiTask>[0]);
     case "appsheet_create_table":
       return createTable(args as Parameters<typeof createTable>[0]);
     case "appsheet_create_view":
