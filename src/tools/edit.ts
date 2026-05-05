@@ -2766,6 +2766,352 @@ export async function addAiTask(args: {
   };
 }
 
+// ===== addSendNotificationTask =====
+// Notification Task ($type=AppWorkflowActionNotification) を Behavior.Tasks に追加し、
+// Process.Nodes に TaskNode (ActionType=Notification) を append。
+// AppSheet モバイルアプリへの push 通知用。
+// HAR (samples/add-Notification.har): _version=3, OutputTableName=null
+export async function addSendNotificationTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  tableName: string;
+  toList?: string[];
+  title?: string;
+  body?: string;
+  deepLink?: string;
+  messageChannelName?: string;
+  useDefaultContent?: boolean;
+  forEntireTable?: boolean;
+  stepName?: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; taskName: string; processName: string; componentIds?: { task: string; node: string }; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  if (tasks.find((t) => t.Name === args.taskName)) throw new Error(`Task '${args.taskName}' は既に存在します`);
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) throw new Error(`Process '${args.processName}' が見つかりません`);
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const stepName = args.stepName ?? args.taskName;
+  const toList = coerceStringArray(args.toList);
+
+  const newTask: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.AppWorkflowActionNotification, Jeenee.DataTypes",
+    ExprLookup: {},
+    Body: args.body ?? null,
+    DeepLink: args.deepLink ?? null,
+    Title: args.title ?? null,
+    To: "",
+    ToList: toList,
+    MessageChannelName: args.messageChannelName ?? "",
+    UseDefaultContent: args.useDefaultContent ?? (!args.title && !args.body),
+    Name: args.taskName,
+    Type: "Notification",
+    IsAiTask: false,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? false,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "App owner",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: 3,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  };
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: "Notification",
+    StepName: stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(newTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, taskName: args.taskName, processName: args.processName,
+      message: `dry-run。Notification Task '${args.taskName}' (To: ${toList.join(',')}) を構築。apply: true で送信。` };
+  }
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return { dryRun: false, applied: !!created, taskName: args.taskName, processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created ? `✅ Notification Task '${args.taskName}' 作成完了` : `⚠️ saveapp Success だが事後検証で Task 不在` };
+}
+
+// ===== addSendSmsTask =====
+// SMS Task ($type=AppWorkflowActionSMS) を Behavior.Tasks に追加。Twilio 連携。
+// HAR (samples/add-SMS.har): _version=1, MessageChannelName="_Custom_Twilio_SMS"
+export async function addSendSmsTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  tableName: string;
+  toList?: string[];               // 電話番号 or AppSheet 列参照
+  fromNumber?: string;             // 送信元電話番号
+  body?: string;
+  bodyTemplate?: string | null;
+  accountSid?: string;             // Twilio Account SID
+  authToken?: string;              // Twilio Auth Token
+  countryCodes?: string[];         // ISO 国コード ["JP", "US"]
+  mediaUrls?: string[];
+  messageChannelName?: string;
+  useDefaultContent?: boolean;
+  forEntireTable?: boolean;
+  stepName?: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; taskName: string; processName: string; componentIds?: { task: string; node: string }; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  if (tasks.find((t) => t.Name === args.taskName)) throw new Error(`Task '${args.taskName}' は既に存在します`);
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) throw new Error(`Process '${args.processName}' が見つかりません`);
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const stepName = args.stepName ?? args.taskName;
+  const toList = coerceStringArray(args.toList);
+  const countryCodeList = coerceStringArray(args.countryCodes);
+  const mediaUrlList = coerceStringArray(args.mediaUrls);
+
+  const newTask: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.AppWorkflowActionSMS, Jeenee.DataTypes",
+    ExprLookup: {},
+    AccountSid: args.accountSid ?? "",
+    AuthToken: args.authToken ?? "",
+    CountryCodes: null,
+    CountryCodeList: countryCodeList.length > 0 ? countryCodeList : ["JP"],
+    From: args.fromNumber ?? "",
+    To: "",
+    ToList: toList,
+    MediaUrls: null,
+    MediaUrlList: mediaUrlList,
+    Body: args.body ?? null,
+    BodyTemplate: args.bodyTemplate ?? null,
+    BodyTemplateDataSourceName: null,
+    MessageChannelName: args.messageChannelName ?? "_Custom_Twilio_SMS",
+    UseDefaultContent: args.useDefaultContent ?? (!args.body),
+    Name: args.taskName,
+    Type: "SMS",
+    IsAiTask: false,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? false,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "App owner",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: 1,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  };
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: "SMS",
+    StepName: stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(newTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, taskName: args.taskName, processName: args.processName,
+      message: `dry-run。SMS Task '${args.taskName}' (To: ${toList.join(',')}) を構築。apply: true で送信。` };
+  }
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return { dryRun: false, applied: !!created, taskName: args.taskName, processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created ? `✅ SMS Task '${args.taskName}' 作成完了` : `⚠️ saveapp Success だが事後検証で Task 不在` };
+}
+
+// ===== addCreateFileTask =====
+// CreateFile Task ($type=AppWorkflowActionMakeDoc, Type=MakeDoc) を Behavior.Tasks に追加。
+// PDF / DOCX / XLSX / HTML / CSV 生成。
+// HAR (samples/add-CreateFile.har): _version=8
+export async function addCreateFileTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  tableName: string;
+  contentType: "PDF" | "DOCX" | "XLSX" | "HTML" | "CSV";
+  bodyTemplate: string;            // Google Doc DocId 形式 (例 'DocId=1t7xzA2...') or 他データソース
+  bodyTemplateDataSourceName?: string;  // "google" 等
+  fileStore?: string;              // "_Default" or 他ファイルストア
+  folderPath?: string;             // 式 ('=' 自動付与)
+  fileNamePrefix?: string;         // 式 ('=' 自動付与)
+  disableTimestampSuffix?: boolean;
+  pageOrientation?: "Portrait" | "Landscape" | "NotSpecified";
+  pageSize?: "A4" | "Letter" | "Legal" | "A3" | "A5" | "NotSpecified";
+  pageHeight?: number;
+  pageWidth?: number;
+  useCustomMargins?: boolean;
+  marginTop?: number;
+  marginRight?: number;
+  marginBottom?: number;
+  marginLeft?: number;
+  forEntireTable?: boolean;
+  stepName?: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; taskName: string; processName: string; componentIds?: { task: string; node: string }; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  if (tasks.find((t) => t.Name === args.taskName)) throw new Error(`Task '${args.taskName}' は既に存在します`);
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) throw new Error(`Process '${args.processName}' が見つかりません`);
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const stepName = args.stepName ?? args.taskName;
+
+  const newTask: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.AppWorkflowActionMakeDoc, Jeenee.DataTypes",
+    ExprLookup: {},
+    ContentType: args.contentType,
+    BodyTemplate: args.bodyTemplate,
+    BodyTemplateDataSourceName: args.bodyTemplateDataSourceName ?? null,
+    FileStore: args.fileStore ?? "_Default",
+    FolderPath: args.folderPath ? normalizeFormula(args.folderPath) : "",
+    FileNamePrefix: args.fileNamePrefix ? normalizeFormula(args.fileNamePrefix) : "",
+    DisableTimestampSuffix: args.disableTimestampSuffix ?? false,
+    AttachmentPageOrientation: args.pageOrientation ?? "NotSpecified",
+    AttachmentPageSize: args.pageSize ?? "NotSpecified",
+    AttachmentPageHeight: args.pageHeight ?? 0,
+    AttachmentPageWidth: args.pageWidth ?? 0,
+    UseCustomMargins: args.useCustomMargins ?? false,
+    AttachmentPageMarginTop: args.marginTop ?? 0,
+    AttachmentPageMarginRight: args.marginRight ?? 0,
+    AttachmentPageMarginBottom: args.marginBottom ?? 0,
+    AttachmentPageMarginLeft: args.marginLeft ?? 0,
+    Name: args.taskName,
+    Type: "MakeDoc",
+    IsAiTask: false,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? false,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "App owner",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: 8,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  };
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: "MakeDoc",
+    StepName: stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(newTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, taskName: args.taskName, processName: args.processName,
+      message: `dry-run。CreateFile Task '${args.taskName}' (${args.contentType}) を構築。apply: true で送信。` };
+  }
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return { dryRun: false, applied: !!created, taskName: args.taskName, processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created ? `✅ CreateFile Task '${args.taskName}' (${args.contentType}) 作成完了` : `⚠️ saveapp Success だが事後検証で Task 不在` };
+}
+
 // ===== addSendEmailTask =====
 // Email Task ($type=AppWorkflowActionEmail) を Behavior.Tasks に追加し、
 // Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Email) を append

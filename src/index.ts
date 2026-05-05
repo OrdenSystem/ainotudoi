@@ -79,6 +79,9 @@ import {
   setViewOptions,
   setColumnOptions,
   addSendEmailTask,
+  addSendNotificationTask,
+  addSendSmsTask,
+  addCreateFileTask,
   addWebhookTask,
   addBranchStep,
   removeStep,
@@ -703,6 +706,92 @@ const tools: Tool[] = [
         apply: { type: "boolean" },
       },
       required: ["processName", "taskName", "tableName", "subject"],
+    },
+  },
+  {
+    name: "appsheet_add_send_notification_task",
+    description:
+      "Bot の Process に Notification Task (push 通知) を追加する。AppSheet モバイルアプリの push 通知。$type=AppWorkflowActionNotification / ActionType=Notification。\n\n## 必須\n- processName / taskName / tableName\n\n## 任意\n- title: 通知タイトル\n- body: 本文\n- toList: 送信先 (メアド / アカウント) の配列\n- deepLink: タップ時の遷移先 (式可)\n- messageChannelName: チャネル名\n- useDefaultContent: title/body を使わずデフォルトコンテンツ (省略時は title+body 未指定なら true)\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        title: { type: "string" },
+        body: { type: "string" },
+        toList: { type: "array", items: { type: "string" } },
+        deepLink: { type: "string" },
+        messageChannelName: { type: "string" },
+        useDefaultContent: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName"],
+    },
+  },
+  {
+    name: "appsheet_add_send_sms_task",
+    description:
+      "Bot の Process に SMS Task (Twilio 連携) を追加する。$type=AppWorkflowActionSMS / ActionType=SMS / MessageChannelName='_Custom_Twilio_SMS'。\n\n## 必須\n- processName / taskName / tableName\n\n## 任意\n- toList: 送信先電話番号の配列\n- fromNumber: 送信元電話番号\n- body: 本文\n- accountSid / authToken: Twilio 認証情報\n- countryCodes: 例 ['JP', 'US']。省略時 ['JP']\n- mediaUrls: MMS 用メディア URL\n- messageChannelName: 既定 '_Custom_Twilio_SMS'\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        toList: { type: "array", items: { type: "string" } },
+        fromNumber: { type: "string" },
+        body: { type: "string" },
+        bodyTemplate: { type: ["string", "null"] },
+        accountSid: { type: "string" },
+        authToken: { type: "string" },
+        countryCodes: { type: "array", items: { type: "string" } },
+        mediaUrls: { type: "array", items: { type: "string" } },
+        messageChannelName: { type: "string" },
+        useDefaultContent: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName"],
+    },
+  },
+  {
+    name: "appsheet_add_create_file_task",
+    description:
+      "Bot の Process に CreateFile Task (PDF/DOCX/XLSX/HTML/CSV 生成) を追加する。$type=AppWorkflowActionMakeDoc / ActionType=MakeDoc / Type=MakeDoc。\n\n## 必須\n- processName / taskName / tableName\n- contentType: 'PDF' / 'DOCX' / 'XLSX' / 'HTML' / 'CSV'\n- bodyTemplate: テンプレート参照 (例 Google Doc は 'DocId=1t7xz...')\n\n## 任意\n- bodyTemplateDataSourceName: データソース名 (例 'google')\n- fileStore: ファイルストア (default '_Default')\n- folderPath: 保存先パス式 ('=' 自動付与)\n- fileNamePrefix: ファイル名 prefix 式 ('=' 自動付与)\n- disableTimestampSuffix: timestamp suffix を無効化\n- pageOrientation: 'Portrait' / 'Landscape' / 'NotSpecified'\n- pageSize: 'A4' / 'Letter' / 'Legal' / 'A3' / 'A5' / 'NotSpecified'\n- pageHeight / pageWidth: ピクセル数\n- useCustomMargins / marginTop/Right/Bottom/Left\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        contentType: { type: "string", enum: ["PDF", "DOCX", "XLSX", "HTML", "CSV"] },
+        bodyTemplate: { type: "string" },
+        bodyTemplateDataSourceName: { type: "string" },
+        fileStore: { type: "string" },
+        folderPath: { type: "string" },
+        fileNamePrefix: { type: "string" },
+        disableTimestampSuffix: { type: "boolean" },
+        pageOrientation: { type: "string", enum: ["Portrait", "Landscape", "NotSpecified"] },
+        pageSize: { type: "string", enum: ["A4", "Letter", "Legal", "A3", "A5", "NotSpecified"] },
+        pageHeight: { type: "number" },
+        pageWidth: { type: "number" },
+        useCustomMargins: { type: "boolean" },
+        marginTop: { type: "number" },
+        marginRight: { type: "number" },
+        marginBottom: { type: "number" },
+        marginLeft: { type: "number" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName", "contentType", "bodyTemplate"],
     },
   },
   {
@@ -1359,6 +1448,12 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return setColumnOptions(args as Parameters<typeof setColumnOptions>[0]);
     case "appsheet_add_send_email_task":
       return addSendEmailTask(args as Parameters<typeof addSendEmailTask>[0]);
+    case "appsheet_add_send_notification_task":
+      return addSendNotificationTask(args as Parameters<typeof addSendNotificationTask>[0]);
+    case "appsheet_add_send_sms_task":
+      return addSendSmsTask(args as Parameters<typeof addSendSmsTask>[0]);
+    case "appsheet_add_create_file_task":
+      return addCreateFileTask(args as Parameters<typeof addCreateFileTask>[0]);
     case "appsheet_add_webhook_task":
       return addWebhookTask(args as Parameters<typeof addWebhookTask>[0]);
     case "appsheet_add_branch_step":
