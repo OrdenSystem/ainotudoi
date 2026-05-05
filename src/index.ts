@@ -89,6 +89,7 @@ import {
   setBotTrigger,
   setBotOptions,
 } from "./tools/edit.js";
+import { refreshCookie as playwrightRefreshCookie } from "./auth/playwright.js";
 
 const tools: Tool[] = [
   {
@@ -342,6 +343,15 @@ const tools: Tool[] = [
         appId: { type: "string" },
         appName: { type: "string", description: "AppSheet 内部 App Name（省略時はスナップショットから取得）" },
       },
+    },
+  },
+  {
+    name: "appsheet_refresh_cookie",
+    description:
+      "Playwright を使って AppSheet にアクセスし、認証 Cookie を取得して .env の APPSHEET_COOKIE を更新する。\n\n## 前提\n- 初回のみ `npm run cookie:init` で headed Chromium を起動して Google アカウントでログイン (MFA も手動)\n- 以降は本ツールが headless で同じ userDataDir を使い Cookie を更新\n- 通常は 30 日に 1 回程度の自動更新で運用\n\n## エラー時\nセッション切れ (Google OAuth が失効) なら 'AppSheet にログインできていません' エラーになる。再度 `npm run cookie:init` で headed login をやり直す。",
+    inputSchema: {
+      type: "object",
+      properties: {},
     },
   },
   {
@@ -1400,6 +1410,10 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return getBots(args as Parameters<typeof getBots>[0]);
     case "appsheet_refresh_app_def":
       return refreshAppDef(args as Parameters<typeof refreshAppDef>[0]);
+    case "appsheet_refresh_cookie": {
+      const r = await playwrightRefreshCookie(true);
+      return { success: true, cookieLength: r.cookieLength, message: `✅ Cookie 更新完了 (${r.cookieLength} chars)` };
+    }
     case "appsheet_set_column_flag":
       return setColumnFlag(args as Parameters<typeof setColumnFlag>[0]);
     case "appsheet_set_column_type":

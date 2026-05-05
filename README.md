@@ -157,13 +157,27 @@ AppSheet Editor の `/api/loadApp/<App名>` レスポンスにアプリ定義丸
 
 `/api/saveapp` は Application Access Key で認証されないため、ブラウザログインセッションの Cookie を流用する。
 
+##### 方法 A: Playwright で自動化 (推奨)
+
+```bash
+# 初回 1 回だけ実行: headed Chromium が開くので Google アカウントでログイン
+npm run cookie:init
+```
+
+セッションは `playwright-userdata/` に永続化される (`.gitignore` 済み)。以降:
+
+- MCP 内から **`appsheet_refresh_cookie`** ツールを呼び出すと headless で Cookie を更新 → `.env` を書き換え
+- Google OAuth セッションが切れたら再度 `npm run cookie:init` で headed login をやり直す
+
+##### 方法 B: 手動コピー (フォールバック)
+
 1. AppSheet Editor を開く（Google ログイン状態）
 2. F12 → Network タブ → 任意の編集を 1 回行ってから Save
 3. `saveapp` リクエストを右クリック → Copy → **「Copy as cURL (bash)」**
 4. 結果を `samples/saveapp.curl.txt` に貼り付け
 5. cURL の `-b '...'` 部分を抽出して `.env` の `APPSHEET_COOKIE=...` に設定
 
-Cookie 有効期限は約 30 日。失効時は再取得が必要。
+Cookie 有効期限は約 30 日。失効時は再取得が必要 (Playwright 経由なら `appsheet_refresh_cookie` を 1 回呼ぶだけ)。
 
 #### 安全ガード
 

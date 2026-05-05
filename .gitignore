@@ -4,6 +4,7 @@ dist/
 .env.local
 credentials/
 .playwright-profile/
+playwright-userdata/
 snapshots/
 samples/
 *.log
