@@ -41,42 +41,66 @@ async function loadPlaywright() {
 
 /**
  * Playwright で AppSheet にアクセスして Cookie を取得。
- * @param headless - true: 自動更新 / false: 初回 headed login
- * @param waitForLogin - headed モードでユーザーのログイン完了を待つ秒数 (default 300)
+ * @param opts.headless - true: 自動更新 / false: 初回 headed login
+ * @param opts.account - Google アカウントを指定してアカウント選択画面をスキップ (例: 'lab@appsheet.fun')
+ * @param opts.waitForLogin - headed モードでユーザーのログイン完了を待つ秒数 (default 300)
  * @returns Cookie 文字列 ("name1=value1; name2=value2; ..." 形式)
  */
-export async function captureCookie(headless: boolean, waitForLogin = 300): Promise<string> {
+export async function captureCookie(
+  opts: { headless: boolean; account?: string; waitForLogin?: number },
+): Promise<string> {
   const { chromium } = await loadPlaywright();
   const ctx = await chromium.launchPersistentContext(USER_DATA_DIR, {
-    headless,
+    headless: opts.headless,
     viewport: { width: 1280, height: 800 },
   });
 
   try {
     const page = await ctx.newPage();
-    await page.goto(APPSHEET_HOME_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    // authuser パラメータで Google アカウント直指定 (アカウント選択画面スキップ)
+    const initialUrl = opts.account
+      ? `${APPSHEET_HOME_URL}?authuser=${encodeURIComponent(opts.account)}`
+      : APPSHEET_HOME_URL;
+    await page.goto(initialUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-    if (!headless) {
+    if (!opts.headless) {
       console.log("[cookie:init] ブラウザが開きました。Google アカウントでログインしてください...");
       console.log("[cookie:init] ログイン完了後、AppList ページが表示されると自動で続行します。");
-      // AppList ページが表示されるまで待つ (URL に template/AppList が含まれる)
-      await page.waitForURL(/\/[Tt]emplate\/AppList/, { timeout: waitForLogin * 1000 });
+      // AppList ページが表示されるまで待つ
+      await page.waitForURL(/\/[Tt]emplate\/AppList/, { timeout: (opts.waitForLogin ?? 300) * 1000 });
       console.log("[cookie:init] ログイン検知。Cookie 取得中...");
     } else {
-      // headless: 既に保存済みセッションを使う想定。AppList が出るかで認証状態を確認
       const url = page.url();
       if (!/\/[Tt]emplate\/AppList/i.test(url)) {
-        // セッション切れなら login ページへリダイレクトされる
         throw new Error(
           `AppSheet にログインできていません (現在 URL: ${url})。'npm run cookie:init' を実行してログインしてください。`,
         );
       }
     }
 
-    // Cookie 取得
-    const cookies = await ctx.cookies("https://www.appsheet.com");
+    // ページが完全に読み込まれるまで待つ (Cookie 反映のラグ対策)
+    await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(2000);
+
+    // CDP (Chrome DevTools Protocol) で全 Cookie を取得
+    // (Persistent context では context.cookies() が空を返すケースがあるため低レベル API を使う)
+    const cdp = await ctx.newCDPSession(page);
+    const cdpResult = await cdp.send("Network.getAllCookies");
+    const allCookies = cdpResult.cookies as Array<{ name: string; value: string; domain: string }>;
+
+    if (!opts.headless) {
+      console.log(`[debug] CDP getAllCookies 全件数: ${allCookies.length}`);
+      const domains = [...new Set(allCookies.map((c) => c.domain))];
+      console.log(`[debug] ドメイン一覧: ${domains.join(", ") || "(空)"}`);
+    }
+
+    const cookies = allCookies.filter((c) => /(^|\.)appsheet\.com$/i.test(c.domain));
     if (cookies.length === 0) {
-      throw new Error("Cookie が取得できませんでした");
+      const domains = [...new Set(allCookies.map((c) => c.domain))];
+      throw new Error(
+        `Cookie が取得できませんでした (全 ${allCookies.length} 件のうち appsheet.com ドメインなし)。` +
+        `ドメイン一覧: ${domains.join(", ") || "(空)"}`,
+      );
     }
     const cookieString = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     return cookieString;
@@ -108,10 +132,17 @@ export async function updateEnvCookie(newCookie: string): Promise<void> {
 
 /**
  * .env の Cookie を更新し、process.env にも反映する (再起動なしで使えるように)。
+ * @param opts.headless - true: 自動更新 / false: 初回 headed login (default true)
+ * @param opts.account - Google アカウント直指定 (例: 'lab@appsheet.fun')
  * @returns 取得した Cookie の長さ (桁数のみログ用)
  */
-export async function refreshCookie(headless = true): Promise<{ cookieLength: number }> {
-  const cookie = await captureCookie(headless);
+export async function refreshCookie(
+  opts: { headless?: boolean; account?: string } = {},
+): Promise<{ cookieLength: number }> {
+  const cookie = await captureCookie({
+    headless: opts.headless ?? true,
+    account: opts.account,
+  });
   await updateEnvCookie(cookie);
   process.env.APPSHEET_COOKIE = cookie;
   return { cookieLength: cookie.length };
