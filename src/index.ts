@@ -84,6 +84,7 @@ import {
   addCreateFileTask,
   addWebhookTask,
   addBranchStep,
+  addDataActionStep,
   removeStep,
   moveStep,
   setBotTrigger,
@@ -889,6 +890,53 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_data_action_step",
+    description:
+      "Bot の Process に Run-a-data-change-action Step を追加する。AppData.DataActions に Action 本体を、Process.Nodes に RUN_ACTION Step を同時追加 (Editor の 'Add Step → Run a data change action' と等価)。\n\n## subtype (5 種、必須)\n- **addRow**: 別テーブルに行追加。referencedTable + assignments[] (=column/value 配列) 必須\n- **deleteRow**: 行削除。tableName のみ\n- **setColumn**: 列値を更新。assignments[] か columnToEdit+newColumnValue\n- **refAction**: 別行集合に既存 Action を実行。referencedTable / referencedRows (式) / referencedAction (既存 Action 名) 必須\n- **composite**: 既存 Action を順次実行。actions[] (Action 名配列) 必須\n\n## 必須\n- processName / stepName / tableName / subtype\n\n## 任意\n- actionName (省略時 '<stepName> Action - 1')\n- condition (式、既定 'true'、'=' 自動付与)\n- prominence / needsConfirmation / confirmationMessage / icon (Action オプション)\n\n## 仕様メモ\n- ConditionEvaluatable / ValueEvaluatable は null 送信 (Editor 側で再生成期待)\n- ActionSettings は ActionDefinition から $type を除いた JSON 文字列で同期\n- referencedAction / composite.actions[] は AppData.DataActions に存在することを事前検証\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string" },
+        tableName: { type: "string", description: "Action のソーステーブル (Action.Table)" },
+        subtype: { type: "string", enum: ["addRow", "deleteRow", "setColumn", "refAction", "composite"] },
+        actionName: { type: "string", description: "省略時 '<stepName> Action - 1'" },
+        referencedTable: { type: "string", description: "addRow / refAction で必須" },
+        assignments: {
+          type: "array",
+          description: "addRow / setColumn 用。column/value のペア配列",
+          items: {
+            type: "object",
+            properties: { column: { type: "string" }, value: { type: "string" } },
+            required: ["column", "value"],
+          },
+        },
+        columnToEdit: { type: "string", description: "setColumn 用ショートカット (assignments 単一の代替)" },
+        newColumnValue: { type: "string", description: "setColumn 用ショートカット。'=' 自動付与" },
+        referencedRows: { type: "string", description: "refAction 用。対象行集合の式。'=' 自動付与" },
+        referencedAction: { type: "string", description: "refAction 用。既存 Action 名" },
+        inputAssignments: {
+          type: "array",
+          description: "refAction 用。参照 Action の Inputs[] にバインドする name/value",
+          items: {
+            type: "object",
+            properties: { name: { type: "string" }, value: { type: "string" } },
+            required: ["name", "value"],
+          },
+        },
+        actions: { type: "array", items: { type: "string" }, description: "composite 用。既存 Action 名の配列" },
+        condition: { type: "string", description: "Action.Condition。既定 'true'。'=' 自動付与" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" },
+        icon: { type: "string", description: "FontAwesome / Material Icons 名。既定 'fa-paper-plane'" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "stepName", "tableName", "subtype"],
+    },
+  },
+  {
     name: "appsheet_set_bot_trigger",
     description:
       "既存 Bot の Trigger (AppEvent) を編集する。eventType の切替 (DataChange ↔ Scheduled)、ChangeEvent 種別変更、cron / timeZone 編集、filterCondition 編集、bot.Disabled の切替に対応。\n\n## 必須\n- botName: 編集対象 Bot 名\n\n## 任意 (どれか 1 つ以上)\n- eventType: 'ADDS_ONLY' / 'UPDATES_ONLY' / 'DELETES_ONLY' / 'ADDS_AND_UPDATES' / 'ADDS_UPDATES_DELETES' / 'Scheduled'\n- filterCondition: 条件式 ('=' 自動付与)。空文字は変更なし扱い\n- tableName: Schedule の Table or DataChange の SchemaName 解決対象\n- scheduleConfig: { cron, timeZone, forEachRowInTable, region } の部分更新\n- disabled: Bot 有効/無効\n\n## 切替時のルール\n- DataChange → Scheduled: scheduleConfig.cron が必須\n- Scheduled → DataChange: eventType (ADDS_ONLY 等) が必須\n\nデフォルト dry-run。",
@@ -1475,6 +1523,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addWebhookTask(args as Parameters<typeof addWebhookTask>[0]);
     case "appsheet_add_branch_step":
       return addBranchStep(args as Parameters<typeof addBranchStep>[0]);
+    case "appsheet_add_data_action_step":
+      return addDataActionStep(args as Parameters<typeof addDataActionStep>[0]);
     case "appsheet_remove_step":
       return removeStep(args as Parameters<typeof removeStep>[0]);
     case "appsheet_move_step":

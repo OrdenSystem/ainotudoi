@@ -5505,3 +5505,364 @@ export async function setColumnOptions(args: {
   if (unknownKeys.length) msg += ` / 未知キー無視: ${unknownKeys.join(', ')}`;
   return { dryRun: false, applied: true, table: args.tableName, column: lookupName, changes, unknownKeys, message: msg };
 }
+
+// ============================================================
+// addDataActionStep — Bot Process に Data Action (RUN_ACTION) Step を追加
+// ============================================================
+// HAR キャプチャ (samples/captured/add_data_action_v2-*) で確認済の payload 仕様:
+//   - AppData.DataActions[] に Action 本体を追加 (5 サブタイプで ActionDefinition 分岐)
+//   - Behavior.AppProcesses[].Nodes[] に RUN_ACTION Step を追加 (5 サブタイプ共通)
+// Phase 1 では ConditionEvaluatable / ValueEvaluatable / ExprLookup は null/{} で送信。
+// (HAR ではフル構造体だが、composite サブタイプでは null だったので Editor 側 fallback あり)
+
+type DataActionSubtype = "addRow" | "deleteRow" | "setColumn" | "refAction" | "composite";
+
+const DATA_ACTION_SUBTYPE_MAP: Record<DataActionSubtype, { actionType: string; defType: string }> = {
+  addRow:    { actionType: "ADD_RECORD_TO",     defType: "Jeenee.DataTypes.DataActionAddRowTo, Jeenee.DataTypes" },
+  deleteRow: { actionType: "DELETE_RECORD",     defType: "Jeenee.DataTypes.DataActionDeleteRecord, Jeenee.DataTypes" },
+  setColumn: { actionType: "SET_COLUMN_VALUE",  defType: "Jeenee.DataTypes.DataActionSetColumnValue, Jeenee.DataTypes" },
+  refAction: { actionType: "REF_ACTION",        defType: "Jeenee.DataTypes.DataActionRef, Jeenee.DataTypes" },
+  composite: { actionType: "COMPOSITE",         defType: "Jeenee.DataTypes.DataActionComposite, Jeenee.DataTypes" },
+};
+
+interface BuildDataActionDefParams {
+  referencedTable?: string;
+  assignments?: Array<{ column: string; value: string }>;
+  columnToEdit?: string;
+  newColumnValue?: string;
+  referencedRows?: string;
+  referencedAction?: string;
+  inputAssignments?: Array<{ name: string; value: string }>;
+  actions?: string[];
+  prominence: string;
+  needsConfirmation: boolean;
+  confirmationMessage: string;
+}
+
+function buildDataActionDefinition(
+  subtype: DataActionSubtype,
+  p: BuildDataActionDefParams,
+): { actionDefinition: Record<string, unknown>; actionSettings: string; topLevelColumnToEdit: string | null } {
+  const { defType } = DATA_ACTION_SUBTYPE_MAP[subtype];
+  const prom = {
+    Prominence: p.prominence,
+    NeedsConfirmation: p.needsConfirmation,
+    ConfirmationMessage: p.confirmationMessage,
+  };
+
+  let def: Record<string, unknown>;
+  let topLevelColumnToEdit: string | null = null;
+
+  switch (subtype) {
+    case "addRow": {
+      if (!p.referencedTable) throw new Error("addRow は referencedTable 必須");
+      const assignments = (p.assignments ?? []).map((a) => ({
+        ColumnToEdit: a.column,
+        NewColumnValue: normalizeFormula(a.value),
+      }));
+      def = {
+        $type: defType,
+        ReferencedTable: p.referencedTable,
+        Assignments: assignments,
+        InputParametersUsed: null,
+        ...prom,
+        ModifiesData: true,
+        BulkApplicable: true,
+      };
+      break;
+    }
+    case "deleteRow": {
+      def = {
+        $type: defType,
+        InputParametersUsed: null,
+        ...prom,
+        ModifiesData: true,
+        BulkApplicable: true,
+      };
+      break;
+    }
+    case "setColumn": {
+      const rawAssignments = p.assignments && p.assignments.length > 0
+        ? p.assignments
+        : (p.columnToEdit && p.newColumnValue !== undefined
+            ? [{ column: p.columnToEdit, value: p.newColumnValue }]
+            : []);
+      if (rawAssignments.length === 0) throw new Error("setColumn は assignments[] か columnToEdit+newColumnValue が必須");
+      const assignments = rawAssignments.map((a) => ({
+        ColumnToEdit: a.column,
+        NewColumnValue: normalizeFormula(a.value),
+      }));
+      // top-level ColumnToEdit/NewColumnValue は HAR で先頭 assignment と同じ値が入る
+      topLevelColumnToEdit = assignments[0].ColumnToEdit;
+      def = {
+        $type: defType,
+        Assignments: assignments,
+        ColumnToEdit: assignments[0].ColumnToEdit,
+        NewColumnValue: assignments[0].NewColumnValue,
+        InputParametersUsed: null,
+        ...prom,
+        ModifiesData: true,
+        BulkApplicable: true,
+      };
+      break;
+    }
+    case "refAction": {
+      if (!p.referencedTable || !p.referencedRows || !p.referencedAction) {
+        throw new Error("refAction は referencedTable / referencedRows / referencedAction 必須");
+      }
+      const inputAssignments = (p.inputAssignments ?? []).map((ia) => ({
+        Name: ia.name,
+        Value: normalizeFormula(ia.value),
+      }));
+      def = {
+        $type: defType,
+        ReferencedTable: p.referencedTable,
+        ReferencedRows: normalizeFormula(p.referencedRows),
+        ReferencedAction: p.referencedAction,
+        InputAssignments: inputAssignments,
+        InputParametersUsed: null,
+        ...prom,
+        // HAR では false。参照 Action 側の ModifiesData が真の値で、Editor 後追いで更新する模様
+        ModifiesData: false,
+        BulkApplicable: true,
+      };
+      break;
+    }
+    case "composite": {
+      if (!p.actions || p.actions.length === 0) throw new Error("composite は actions[] が必須");
+      def = {
+        $type: defType,
+        Actions: p.actions.map((a) => ({ ActionName: a })),
+        ...prom,
+        ModifiesData: true,
+        BulkApplicable: true,
+      };
+      break;
+    }
+  }
+
+  // ActionSettings は ActionDefinition から $type を除いた object の JSON 文字列 (HAR 観察)
+  const settingsObj = { ...def };
+  delete settingsObj.$type;
+  return { actionDefinition: def, actionSettings: JSON.stringify(settingsObj), topLevelColumnToEdit };
+}
+
+export async function addDataActionStep(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  stepName: string;
+  tableName: string;
+  subtype: DataActionSubtype;
+
+  actionName?: string;
+
+  // subtype 別 (任意)
+  referencedTable?: string;
+  assignments?: Array<{ column: string; value: string }>;
+  columnToEdit?: string;
+  newColumnValue?: string;
+  referencedRows?: string;
+  referencedAction?: string;
+  inputAssignments?: Array<{ name: string; value: string }>;
+  actions?: string[];
+
+  // Action オプション
+  condition?: string;
+  prominence?: "Display_Prominently" | "Display_Overlay" | "Display_Inline" | "Do_Not_Display";
+  needsConfirmation?: boolean;
+  confirmationMessage?: string;
+  icon?: string;
+
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  processName: string;
+  stepName: string;
+  actionName: string;
+  subtype: DataActionSubtype;
+  componentIds?: { action: string; node: string };
+  message: string;
+}> {
+  if (!args.processName) throw new Error("processName は必須");
+  if (!args.stepName) throw new Error("stepName は必須");
+  if (!args.tableName) throw new Error("tableName は必須");
+  if (!args.subtype) throw new Error("subtype は必須 (addRow / deleteRow / setColumn / refAction / composite)");
+  if (!DATA_ACTION_SUBTYPE_MAP[args.subtype]) throw new Error(`subtype '${args.subtype}' は未知。許容: ${Object.keys(DATA_ACTION_SUBTYPE_MAP).join(', ')}`);
+
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  // ----- 既存構造の取得 + 検証 -----
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  if (!appData) throw new Error("AppData が見つかりません");
+  const dataSets = (appData.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) {
+    throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+  }
+  const dataActions = (appData.DataActions as Array<Record<string, unknown>> | undefined) ?? [];
+
+  // referencedTable 検証
+  if ((args.subtype === "addRow" || args.subtype === "refAction") && args.referencedTable) {
+    if (!dataSets.find((d) => d.Name === args.referencedTable)) {
+      throw new Error(`referencedTable '${args.referencedTable}' が見つかりません`);
+    }
+  }
+  // referencedAction 検証
+  if (args.subtype === "refAction" && args.referencedAction) {
+    if (!dataActions.find((a) => a.Name === args.referencedAction)) {
+      throw new Error(`referencedAction '${args.referencedAction}' は AppData.DataActions に存在しません`);
+    }
+  }
+  // composite.actions[] 検証
+  if (args.subtype === "composite" && args.actions) {
+    const missing = args.actions.filter((name) => !dataActions.find((a) => a.Name === name));
+    if (missing.length > 0) {
+      throw new Error(`composite.actions[] の以下が AppData.DataActions に存在しません: ${missing.join(', ')}`);
+    }
+  }
+
+  // Step 名重複チェック (同一 Process 内のみ)
+  const existingNodes = (targetProcess.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  if (existingNodes.find((n) => n.StepName === args.stepName)) {
+    throw new Error(`Step '${args.stepName}' は Process '${args.processName}' に既に存在します`);
+  }
+
+  // Action 名生成 + 重複チェック
+  const actionName = args.actionName ?? `${args.stepName} Action - 1`;
+  if (dataActions.find((a) => a.Name === actionName)) {
+    throw new Error(`Action '${actionName}' は AppData.DataActions に既に存在します。actionName を明示指定してください`);
+  }
+
+  // ----- ActionDefinition 構築 -----
+  const { actionDefinition, actionSettings, topLevelColumnToEdit } = buildDataActionDefinition(args.subtype, {
+    referencedTable: args.referencedTable,
+    assignments: args.assignments,
+    columnToEdit: args.columnToEdit,
+    newColumnValue: args.newColumnValue,
+    referencedRows: args.referencedRows,
+    referencedAction: args.referencedAction,
+    inputAssignments: args.inputAssignments,
+    actions: args.actions,
+    prominence: args.prominence ?? "Display_Prominently",
+    needsConfirmation: args.needsConfirmation ?? false,
+    confirmationMessage: args.confirmationMessage ?? "",
+  });
+
+  const actionComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const condition = normalizeFormula(args.condition ?? "true");
+
+  const newAction: Record<string, unknown> = {
+    ExprLookup: {},
+    Value: null,
+    ValueEvaluatable: null,
+    ConditionEvaluatable: null,  // Phase 1: Editor が再生成する想定
+    ActionType: DATA_ACTION_SUBTYPE_MAP[args.subtype].actionType,
+    ActionSettings: actionSettings,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    Inputs: [],
+    Name: actionName,
+    DisplayName: null,
+    CreatedBy: "App owner",
+    Icon: args.icon ?? "fa-paper-plane",
+    IconRunnerUps: null,
+    Table: args.tableName,
+    TableScope: false,
+    Condition: condition,
+    ColumnToEdit: topLevelColumnToEdit,
+    ColumnAttachment: topLevelColumnToEdit,
+    ActionOrder: 1,
+    ActionDefinition: actionDefinition,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: actionComponentId,
+    _isNew: true,
+    _version: 0,
+    _index: dataActions.length,
+    _path: `AppData.DataActions[${dataActions.length}]`,
+  };
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.RunActionNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_ACTION",
+    Action: actionName,
+    InputAssignments: [],
+    StepName: args.stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  // applyFn (409 retry 対応)
+  const applyFn = (a: AppDef) => {
+    const ad = (a as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+    if (!ad) throw new Error("AppData が見つかりません (リトライ時)");
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません (リトライ時)");
+    if (!ad.DataActions) ad.DataActions = [];
+    (ad.DataActions as Array<Record<string, unknown>>).push(newAction);
+    const procs = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+    const tp = procs.find((p) => p.Name === args.processName);
+    if (!tp) throw new Error(`Process '${args.processName}' が見つかりません (リトライ時)`);
+    if (!tp.Nodes) tp.Nodes = [];
+    (tp.Nodes as Array<Record<string, unknown>>).push(newNode);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      processName: args.processName,
+      stepName: args.stepName,
+      actionName,
+      subtype: args.subtype,
+      message: `dry-run。${args.subtype} Action '${actionName}' + RUN_ACTION Step '${args.stepName}' を Process '${args.processName}' に追加。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedAppData = (refreshed as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  const refreshedActions = (refreshedAppData?.DataActions as Array<Record<string, unknown>> | undefined) ?? [];
+  const refreshedBeh = (refreshed as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  const refreshedProcs = (refreshedBeh?.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const refreshedProc = refreshedProcs.find((p) => p.Name === args.processName);
+  const refreshedNodes = (refreshedProc?.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+
+  const createdAction = refreshedActions.find((a) => a.Name === actionName);
+  const createdNode = refreshedNodes.find((n) => n.StepName === args.stepName && n.Action === actionName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  const ok = !!createdAction && !!createdNode;
+  return {
+    dryRun: false,
+    applied: ok,
+    processName: args.processName,
+    stepName: args.stepName,
+    actionName,
+    subtype: args.subtype,
+    componentIds: { action: actionComponentId, node: nodeComponentId },
+    message: ok
+      ? `✅ ${args.subtype} Step '${args.stepName}' (Action '${actionName}') を Process '${args.processName}' に追加完了`
+      : `⚠️ saveapp Success だが事後検証で ${createdAction ? "Step" : createdNode ? "Action" : "Step・Action 双方"} 不在`,
+  };
+}
