@@ -169,6 +169,8 @@ npm run cookie:init
 - MCP 内から **`appsheet_refresh_cookie`** ツールを呼び出すと headless で Cookie を更新 → `.env` を書き換え
 - Google OAuth セッションが切れたら再度 `npm run cookie:init` で headed login をやり直す
 
+`.env` に `APPSHEET_LOGIN_ACCOUNT=<your-account>@example.com` を入れておくと Google アカウント選択画面をスキップできる（複数アカウントを Chromium に保存している場合に便利）。
+
 ##### 方法 B: 手動コピー (フォールバック)
 
 1. AppSheet Editor を開く（Google ログイン状態）
@@ -178,6 +180,42 @@ npm run cookie:init
 5. cURL の `-b '...'` 部分を抽出して `.env` の `APPSHEET_COOKIE=...` に設定
 
 Cookie 有効期限は約 30 日。失効時は再取得が必要 (Playwright 経由なら `appsheet_refresh_cookie` を 1 回呼ぶだけ)。
+
+#### saveapp の HAR キャプチャ自動化（新ツール開発用）
+
+新しい Editor 操作（Bot / Step / Task の追加など）を `appsheet-mcp` に取り込みたいとき、Editor で実機操作したときに飛ぶ `/api/saveapp` の payload を自動収集する仕組みを用意してある。手で DevTools → HAR エクスポートする必要はない。
+
+```bash
+npm run capture-har -- \
+  --label=add_data_action_step \
+  --app=<APP_ID> \
+  --app-name=<INTERNAL_APP_NAME>
+```
+
+オプション:
+
+| 引数 | 説明 |
+|------|------|
+| `--label=<string>` | 保存ファイル名のラベル（必須） |
+| `--app=<APP_ID>` | 対象 App の UUID（必須） |
+| `--app-name=<string>` | Editor ディープリンクに使う internal app name（例: `介護カルテシステム-995205666`）。指定すると対象アプリの Editor が直接開く |
+| `--account=<email>` | Google アカウント直指定。省略時は `.env` の `APPSHEET_LOGIN_ACCOUNT` |
+| `--out=<dir>` | 保存先（default: `samples/captured/`） |
+| `--max=<n>` | 最大キャプチャ件数（default: 50） |
+| `--timeout=<minutes>` | セッション全体のタイムアウト分（default: 30） |
+
+挙動:
+
+1. headed Chromium が起動し、Editor が開く
+2. ユーザーは普段どおり Bot / Step / Task を追加して **Save** するだけ
+3. `POST /api/saveapp` が飛ぶたびに `samples/captured/<label>-<seq>-<timestamp>.json` に
+   - リクエスト URL / メソッド / ヘッダ（Cookie 等は除外）
+   - リクエスト body と `appJson` をパースした object
+   - レスポンス status / body
+   をまとめて自動保存
+4. ブラウザを閉じるかタイムアウトで終了
+
+これで集めた JSON の `parsedAppJson` 配下を diff すれば、新ツール（例: `add_data_action_step`）の payload 仕様が機械的に把握できる。
 
 #### 安全ガード
 
