@@ -176,12 +176,14 @@ export interface CapturedSaveapp {
   method: string;
   /** リクエストヘッダ抜粋 (機密情報除く) */
   requestHeaders: Record<string, string>;
-  /** リクエストボディ (saveapp は multipart 風 form-encoded; 解析できればパース後の object も付ける) */
-  requestBody: string;
-  /** appJson 部分を JSON パースしたもの (差分の本体)。失敗時 null */
-  parsedAppJson: unknown;
-  /** その他フォームフィールド (appJson 以外) */
-  otherFields: Record<string, string>;
+  /** リクエスト body のバイト数 (gunzip 前) */
+  requestBodyBytes: number;
+  /** Content-Encoding ヘッダ (gzip / br / なし) */
+  requestEncoding: string | null;
+  /** リクエスト body を gunzip + JSON.parse した結果。失敗時は null + parseError */
+  requestJson: unknown;
+  /** requestJson のパース失敗時のエラー文字列 */
+  parseError?: string;
   /** レスポンスステータス */
   responseStatus: number;
   /** レスポンスボディ (JSON パース可能ならパース、不可なら文字列) */
@@ -189,32 +191,56 @@ export interface CapturedSaveapp {
 }
 
 /**
- * saveapp の form-encoded body から appJson と他のフィールドを抽出する。
- * AppSheet Editor は通常 application/x-www-form-urlencoded で送信。
+ * gzip 圧縮された Buffer を gunzip → UTF-8 文字列にする。
  */
-function parseSaveappBody(body: string): {
-  parsedAppJson: unknown;
-  otherFields: Record<string, string>;
-} {
-  const otherFields: Record<string, string> = {};
-  let parsedAppJson: unknown = null;
-  try {
-    const params = new URLSearchParams(body);
-    for (const [k, v] of params.entries()) {
-      if (k === "appJson") {
-        try {
-          parsedAppJson = JSON.parse(v);
-        } catch {
-          parsedAppJson = null;
-        }
-      } else {
-        otherFields[k] = v;
-      }
-    }
-  } catch {
-    /* fall through with defaults */
+async function gunzipBuffer(buf: Buffer): Promise<string> {
+  const { gunzip } = await import("node:zlib");
+  return new Promise((resolve, reject) => {
+    gunzip(buf, (err, out) => {
+      if (err) reject(err);
+      else resolve(out.toString("utf8"));
+    });
+  });
+}
+
+/**
+ * brotli 圧縮された Buffer を decompress → UTF-8 文字列にする。
+ */
+async function brotliDecompressBuffer(buf: Buffer): Promise<string> {
+  const { brotliDecompress } = await import("node:zlib");
+  return new Promise((resolve, reject) => {
+    brotliDecompress(buf, (err, out) => {
+      if (err) reject(err);
+      else resolve(out.toString("utf8"));
+    });
+  });
+}
+
+/**
+ * saveapp の request body をデコードして JSON にする。
+ * Content-Encoding (gzip / br) を尊重し、生バイトから復元する。
+ */
+async function decodeRequestBody(
+  buf: Buffer | null,
+  encoding: string | null,
+): Promise<{ requestJson: unknown; parseError?: string }> {
+  if (!buf || buf.length === 0) {
+    return { requestJson: null, parseError: "empty body" };
   }
-  return { parsedAppJson, otherFields };
+  try {
+    let text: string;
+    const enc = (encoding ?? "").toLowerCase();
+    if (enc.includes("gzip")) {
+      text = await gunzipBuffer(buf);
+    } else if (enc.includes("br")) {
+      text = await brotliDecompressBuffer(buf);
+    } else {
+      text = buf.toString("utf8");
+    }
+    return { requestJson: JSON.parse(text) };
+  } catch (e) {
+    return { requestJson: null, parseError: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /**
@@ -277,8 +303,10 @@ export async function captureSaveapp(
         return;
       }
 
-      const requestBody = request.postData() ?? "";
-      const { parsedAppJson, otherFields } = parseSaveappBody(requestBody);
+      const reqHeaders = request.headers();
+      const requestEncoding = reqHeaders["content-encoding"] ?? null;
+      const requestBuf = request.postDataBuffer();
+      const { requestJson, parseError } = await decodeRequestBody(requestBuf, requestEncoding);
 
       let responseBody: unknown;
       const responseText = await response.text().catch(() => "");
@@ -298,10 +326,11 @@ export async function captureSaveapp(
         capturedAt,
         url,
         method: request.method(),
-        requestHeaders: filterHeaders(request.headers()),
-        requestBody,
-        parsedAppJson,
-        otherFields,
+        requestHeaders: filterHeaders(reqHeaders),
+        requestBodyBytes: requestBuf?.length ?? 0,
+        requestEncoding,
+        requestJson,
+        ...(parseError ? { parseError } : {}),
         responseStatus: response.status(),
         responseBody,
       };
