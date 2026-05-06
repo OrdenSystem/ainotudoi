@@ -5866,3 +5866,329 @@ export async function addDataActionStep(args: {
       : `⚠️ saveapp Success だが事後検証で ${createdAction ? "Step" : createdNode ? "Action" : "Step・Action 双方"} 不在`,
   };
 }
+
+// ============================================================
+// addCallProcessStep — 別 Process を呼び出す Step を追加
+// ============================================================
+// HAR 観察: { $type: CallProcessNode, NodeType: CALL_PROCESS, ProcessName, CallMode, Arguments, ... }
+
+export async function addCallProcessStep(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  stepName: string;
+  targetProcessName: string;            // 呼ぶ先 Process 名
+  callMode?: "ADD";                     // 既定 ADD (HAR 観察値)
+  arguments?: Array<{ name: string; value: string }>;
+  comment?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  processName: string;
+  stepName: string;
+  targetProcessName: string;
+  componentId?: string;
+  message: string;
+}> {
+  if (!args.processName) throw new Error("processName は必須");
+  if (!args.stepName) throw new Error("stepName は必須");
+  if (!args.targetProcessName) throw new Error("targetProcessName は必須");
+
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+  const calledProcess = processes.find((p) => p.Name === args.targetProcessName);
+  if (!calledProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`targetProcessName '${args.targetProcessName}' が見つかりません。既知: ${known}`);
+  }
+
+  const existingNodes = (targetProcess.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  if (existingNodes.find((n) => n.StepName === args.stepName)) {
+    throw new Error(`Step '${args.stepName}' は Process '${args.processName}' に既に存在します`);
+  }
+
+  const componentId = generateComponentId();
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.CallProcessNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "CALL_PROCESS",
+    ProcessName: args.targetProcessName,
+    CallMode: args.callMode ?? "ADD",
+    Arguments: (args.arguments ?? []).map((a) => ({ Name: a.name, Value: normalizeFormula(a.value) })),
+    StepName: args.stepName,
+    OutputTableName: null,
+    Comment: args.comment ?? null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: componentId,
+  };
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません (リトライ時)");
+    const procs = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+    const tp = procs.find((p) => p.Name === args.processName);
+    if (!tp) throw new Error(`Process '${args.processName}' が見つかりません (リトライ時)`);
+    if (!tp.Nodes) tp.Nodes = [];
+    (tp.Nodes as Array<Record<string, unknown>>).push(newNode);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false,
+      processName: args.processName, stepName: args.stepName, targetProcessName: args.targetProcessName,
+      message: `dry-run。CallProcess Step '${args.stepName}' (-> '${args.targetProcessName}') を Process '${args.processName}' に追加。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedProcs = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppProcesses as Array<Record<string, unknown>> | undefined;
+  const refreshedProc = refreshedProcs?.find((p) => p.Name === args.processName);
+  const created = (refreshedProc?.Nodes as Array<Record<string, unknown>> | undefined)?.find((n) => n.ComponentId === componentId);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !!created,
+    processName: args.processName, stepName: args.stepName, targetProcessName: args.targetProcessName,
+    componentId,
+    message: created
+      ? `✅ CallProcess Step '${args.stepName}' (-> '${args.targetProcessName}') を Process '${args.processName}' に追加完了`
+      : `⚠️ saveapp Success だが事後検証で Step 不在`,
+  };
+}
+
+// ============================================================
+// addReturnStep — sub-process が値を返す Step を追加
+// ============================================================
+// HAR 観察: { $type: ReturnNode, NodeType: RETURN, ReturnValues: [{ColumnToEdit, NewColumnValue}], ... }
+
+export async function addReturnStep(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  stepName: string;
+  returnValues: Array<{ name: string; value: string }>;  // name=ColumnToEdit, value=NewColumnValue
+  comment?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  processName: string;
+  stepName: string;
+  componentId?: string;
+  message: string;
+}> {
+  if (!args.processName) throw new Error("processName は必須");
+  if (!args.stepName) throw new Error("stepName は必須");
+  if (!args.returnValues || args.returnValues.length === 0) {
+    throw new Error("returnValues[] は必須 (空不可)");
+  }
+
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+
+  const existingNodes = (targetProcess.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  if (existingNodes.find((n) => n.StepName === args.stepName)) {
+    throw new Error(`Step '${args.stepName}' は Process '${args.processName}' に既に存在します`);
+  }
+
+  const componentId = generateComponentId();
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.ReturnNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RETURN",
+    ReturnValues: args.returnValues.map((rv) => ({
+      ColumnToEdit: rv.name,
+      NewColumnValue: normalizeFormula(rv.value),
+    })),
+    StepName: args.stepName,
+    OutputTableName: null,
+    Comment: args.comment ?? null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: componentId,
+  };
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません (リトライ時)");
+    const procs = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+    const tp = procs.find((p) => p.Name === args.processName);
+    if (!tp) throw new Error(`Process '${args.processName}' が見つかりません (リトライ時)`);
+    if (!tp.Nodes) tp.Nodes = [];
+    (tp.Nodes as Array<Record<string, unknown>>).push(newNode);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false,
+      processName: args.processName, stepName: args.stepName,
+      message: `dry-run。Return Step '${args.stepName}' (${args.returnValues.length} 値) を Process '${args.processName}' に追加。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedProcs = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppProcesses as Array<Record<string, unknown>> | undefined;
+  const refreshedProc = refreshedProcs?.find((p) => p.Name === args.processName);
+  const created = (refreshedProc?.Nodes as Array<Record<string, unknown>> | undefined)?.find((n) => n.ComponentId === componentId);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !!created,
+    processName: args.processName, stepName: args.stepName,
+    componentId,
+    message: created
+      ? `✅ Return Step '${args.stepName}' を Process '${args.processName}' に追加完了`
+      : `⚠️ saveapp Success だが事後検証で Step 不在`,
+  };
+}
+
+// ============================================================
+// addWaitStep — 一定時間待機 / 条件待ち / イベント待ち Step を追加
+// ============================================================
+// HAR 観察 (WaitForPeriod): { $type: WaitNode, NodeType: WAIT, WaitNodeType, Period, Event=null, Condition=null, ... }
+// WaitNodeType: "WaitForPeriod" | "WaitForCondition" | "WaitForEvent" (推定)
+
+function wrapDurationFormula(s: string): string {
+  // "30:00:00" のような期間文字列なら =\"30:00:00\" にラップ。既に式 (= 始まり) ならそのまま
+  if (s.startsWith("=")) return s;
+  // クォートを含まない素の値の場合、文字列リテラルとして式に変換
+  return `="${s.replace(/"/g, '\\"')}"`;
+}
+
+export async function addWaitStep(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  stepName: string;
+  waitNodeType?: "WaitForPeriod" | "WaitForCondition" | "WaitForEvent";  // 既定 WaitForPeriod
+  period?: string;                          // WaitForPeriod 用 (例 "30:00:00" or '="30:00:00"')
+  condition?: string;                       // WaitForCondition 用 (式)
+  event?: string;                           // WaitForEvent 用 (Event 名)
+  customizedTimeOut?: boolean;
+  comment?: string;
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  processName: string;
+  stepName: string;
+  waitNodeType: string;
+  componentId?: string;
+  message: string;
+}> {
+  if (!args.processName) throw new Error("processName は必須");
+  if (!args.stepName) throw new Error("stepName は必須");
+
+  const waitNodeType = args.waitNodeType ?? "WaitForPeriod";
+  if (waitNodeType === "WaitForPeriod" && !args.period) {
+    throw new Error("WaitForPeriod は period (例 '30:00:00') 必須");
+  }
+  if (waitNodeType === "WaitForCondition" && !args.condition) {
+    throw new Error("WaitForCondition は condition (式) 必須");
+  }
+  if (waitNodeType === "WaitForEvent" && !args.event) {
+    throw new Error("WaitForEvent は event (Event 名) 必須");
+  }
+
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+
+  const existingNodes = (targetProcess.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  if (existingNodes.find((n) => n.StepName === args.stepName)) {
+    throw new Error(`Step '${args.stepName}' は Process '${args.processName}' に既に存在します`);
+  }
+
+  const componentId = generateComponentId();
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.WaitNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "WAIT",
+    Event: waitNodeType === "WaitForEvent" ? args.event : null,
+    Condition: waitNodeType === "WaitForCondition" ? normalizeFormula(args.condition!) : null,
+    Period: waitNodeType === "WaitForPeriod" ? wrapDurationFormula(args.period!) : null,
+    WaitNodeType: waitNodeType,
+    CustomizedTimeOut: args.customizedTimeOut ?? false,
+    TimedOutNodes: [],
+    CallbackBotName: null,
+    CallbackBotId: null,
+    CallbackEventName: null,
+    CallbackEventId: null,
+    StepName: args.stepName,
+    OutputTableName: null,
+    Comment: args.comment ?? null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: componentId,
+  };
+
+  const applyFn = (a: AppDef) => {
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません (リトライ時)");
+    const procs = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+    const tp = procs.find((p) => p.Name === args.processName);
+    if (!tp) throw new Error(`Process '${args.processName}' が見つかりません (リトライ時)`);
+    if (!tp.Nodes) tp.Nodes = [];
+    (tp.Nodes as Array<Record<string, unknown>>).push(newNode);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false,
+      processName: args.processName, stepName: args.stepName, waitNodeType,
+      message: `dry-run。Wait Step '${args.stepName}' (${waitNodeType}) を Process '${args.processName}' に追加。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedProcs = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.AppProcesses as Array<Record<string, unknown>> | undefined;
+  const refreshedProc = refreshedProcs?.find((p) => p.Name === args.processName);
+  const created = (refreshedProc?.Nodes as Array<Record<string, unknown>> | undefined)?.find((n) => n.ComponentId === componentId);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !!created,
+    processName: args.processName, stepName: args.stepName, waitNodeType,
+    componentId,
+    message: created
+      ? `✅ Wait Step '${args.stepName}' (${waitNodeType}) を Process '${args.processName}' に追加完了`
+      : `⚠️ saveapp Success だが事後検証で Step 不在`,
+  };
+}
