@@ -71,6 +71,7 @@ import {
   removeSlice,
   addCallScriptTask,
   setCallScriptTask,
+  addAiTask,
   createTable,
   createView,
   setColumnYNLabels,
@@ -78,13 +79,18 @@ import {
   setViewOptions,
   setColumnOptions,
   addSendEmailTask,
+  addSendNotificationTask,
+  addSendSmsTask,
+  addCreateFileTask,
   addWebhookTask,
   addBranchStep,
+  addDataActionStep,
   removeStep,
   moveStep,
   setBotTrigger,
   setBotOptions,
 } from "./tools/edit.js";
+import { refreshCookie as playwrightRefreshCookie } from "./auth/playwright.js";
 
 const tools: Tool[] = [
   {
@@ -337,6 +343,17 @@ const tools: Tool[] = [
       properties: {
         appId: { type: "string" },
         appName: { type: "string", description: "AppSheet 内部 App Name（省略時はスナップショットから取得）" },
+      },
+    },
+  },
+  {
+    name: "appsheet_refresh_cookie",
+    description:
+      "Playwright を使って AppSheet にアクセスし、認証 Cookie を取得して .env の APPSHEET_COOKIE を更新する。\n\n## 前提\n- 初回のみ `npm run cookie:init` で headed Chromium を起動して Google アカウントでログイン (MFA も手動)\n- 以降は本ツールが headless で同じ userDataDir を使い Cookie を更新\n- 通常は 30 日に 1 回程度の自動更新で運用\n\n## 任意\n- account: Google アカウント直指定 (例 'lab@appsheet.fun')。複数アカウントがある場合に便利\n\n## エラー時\nセッション切れ (Google OAuth が失効) なら 'AppSheet にログインできていません' エラーになる。再度 `npm run cookie:init` で headed login をやり直す。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Google アカウント直指定 (authuser パラメータ)" },
       },
     },
   },
@@ -705,6 +722,92 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_send_notification_task",
+    description:
+      "Bot の Process に Notification Task (push 通知) を追加する。AppSheet モバイルアプリの push 通知。$type=AppWorkflowActionNotification / ActionType=Notification。\n\n## 必須\n- processName / taskName / tableName\n\n## 任意\n- title: 通知タイトル\n- body: 本文\n- toList: 送信先 (メアド / アカウント) の配列\n- deepLink: タップ時の遷移先 (式可)\n- messageChannelName: チャネル名\n- useDefaultContent: title/body を使わずデフォルトコンテンツ (省略時は title+body 未指定なら true)\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        title: { type: "string" },
+        body: { type: "string" },
+        toList: { type: "array", items: { type: "string" } },
+        deepLink: { type: "string" },
+        messageChannelName: { type: "string" },
+        useDefaultContent: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName"],
+    },
+  },
+  {
+    name: "appsheet_add_send_sms_task",
+    description:
+      "Bot の Process に SMS Task (Twilio 連携) を追加する。$type=AppWorkflowActionSMS / ActionType=SMS / MessageChannelName='_Custom_Twilio_SMS'。\n\n## 必須\n- processName / taskName / tableName\n\n## 任意\n- toList: 送信先電話番号の配列\n- fromNumber: 送信元電話番号\n- body: 本文\n- accountSid / authToken: Twilio 認証情報\n- countryCodes: 例 ['JP', 'US']。省略時 ['JP']\n- mediaUrls: MMS 用メディア URL\n- messageChannelName: 既定 '_Custom_Twilio_SMS'\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        toList: { type: "array", items: { type: "string" } },
+        fromNumber: { type: "string" },
+        body: { type: "string" },
+        bodyTemplate: { type: ["string", "null"] },
+        accountSid: { type: "string" },
+        authToken: { type: "string" },
+        countryCodes: { type: "array", items: { type: "string" } },
+        mediaUrls: { type: "array", items: { type: "string" } },
+        messageChannelName: { type: "string" },
+        useDefaultContent: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName"],
+    },
+  },
+  {
+    name: "appsheet_add_create_file_task",
+    description:
+      "Bot の Process に CreateFile Task (PDF/DOCX/XLSX/HTML/CSV 生成) を追加する。$type=AppWorkflowActionMakeDoc / ActionType=MakeDoc / Type=MakeDoc。\n\n## 必須\n- processName / taskName / tableName\n- contentType: 'PDF' / 'DOCX' / 'XLSX' / 'HTML' / 'CSV'\n- bodyTemplate: テンプレート参照 (例 Google Doc は 'DocId=1t7xz...')\n\n## 任意\n- bodyTemplateDataSourceName: データソース名 (例 'google')\n- fileStore: ファイルストア (default '_Default')\n- folderPath: 保存先パス式 ('=' 自動付与)\n- fileNamePrefix: ファイル名 prefix 式 ('=' 自動付与)\n- disableTimestampSuffix: timestamp suffix を無効化\n- pageOrientation: 'Portrait' / 'Landscape' / 'NotSpecified'\n- pageSize: 'A4' / 'Letter' / 'Legal' / 'A3' / 'A5' / 'NotSpecified'\n- pageHeight / pageWidth: ピクセル数\n- useCustomMargins / marginTop/Right/Bottom/Left\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        contentType: { type: "string", enum: ["PDF", "DOCX", "XLSX", "HTML", "CSV"] },
+        bodyTemplate: { type: "string" },
+        bodyTemplateDataSourceName: { type: "string" },
+        fileStore: { type: "string" },
+        folderPath: { type: "string" },
+        fileNamePrefix: { type: "string" },
+        disableTimestampSuffix: { type: "boolean" },
+        pageOrientation: { type: "string", enum: ["Portrait", "Landscape", "NotSpecified"] },
+        pageSize: { type: "string", enum: ["A4", "Letter", "Legal", "A3", "A5", "NotSpecified"] },
+        pageHeight: { type: "number" },
+        pageWidth: { type: "number" },
+        useCustomMargins: { type: "boolean" },
+        marginTop: { type: "number" },
+        marginRight: { type: "number" },
+        marginBottom: { type: "number" },
+        marginLeft: { type: "number" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName", "contentType", "bodyTemplate"],
+    },
+  },
+  {
     name: "appsheet_add_webhook_task",
     description:
       "Bot の Process に Webhook Task を追加する。Behavior.Tasks に Webhook Task ($type=AppWorkflowActionWebhook) を作成し、Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Webhook) を append。\n\n## 必須\n- processName / taskName / tableName / url\n\n## 任意\n- preset: 'Custom' (default) / 'Slack Hook' / 'AppSheet API'\n- verb: 'Get' / 'Post' (default) / 'Put' / 'Delete' / 'Patch'\n- contentType: 'JSON' (default) / 'XML' / 'FormUrlEncoded'\n- body: リクエストボディ (templating可)\n- headers: [{name, value}] 配列\n- timeoutSeconds: default 180\n- maxRetryCount: default 3\n- asyncExec: 非同期実行\n- targetAppId: AppSheet API preset 用の対象 App ID\n\nデフォルト dry-run。",
@@ -784,6 +887,53 @@ const tools: Tool[] = [
         apply: { type: "boolean" },
       },
       required: ["processName", "stepName", "condition"],
+    },
+  },
+  {
+    name: "appsheet_add_data_action_step",
+    description:
+      "Bot の Process に Run-a-data-change-action Step を追加する。AppData.DataActions に Action 本体を、Process.Nodes に RUN_ACTION Step を同時追加 (Editor の 'Add Step → Run a data change action' と等価)。\n\n## subtype (5 種、必須)\n- **addRow**: 別テーブルに行追加。referencedTable + assignments[] (=column/value 配列) 必須\n- **deleteRow**: 行削除。tableName のみ\n- **setColumn**: 列値を更新。assignments[] か columnToEdit+newColumnValue\n- **refAction**: 別行集合に既存 Action を実行。referencedTable / referencedRows (式) / referencedAction (既存 Action 名) 必須\n- **composite**: 既存 Action を順次実行。actions[] (Action 名配列) 必須\n\n## 必須\n- processName / stepName / tableName / subtype\n\n## 任意\n- actionName (省略時 '<stepName> Action - 1')\n- condition (式、既定 'true'、'=' 自動付与)\n- prominence / needsConfirmation / confirmationMessage / icon (Action オプション)\n\n## 仕様メモ\n- ConditionEvaluatable / ValueEvaluatable は null 送信 (Editor 側で再生成期待)\n- ActionSettings は ActionDefinition から $type を除いた JSON 文字列で同期\n- referencedAction / composite.actions[] は AppData.DataActions に存在することを事前検証\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string" },
+        tableName: { type: "string", description: "Action のソーステーブル (Action.Table)" },
+        subtype: { type: "string", enum: ["addRow", "deleteRow", "setColumn", "refAction", "composite"] },
+        actionName: { type: "string", description: "省略時 '<stepName> Action - 1'" },
+        referencedTable: { type: "string", description: "addRow / refAction で必須" },
+        assignments: {
+          type: "array",
+          description: "addRow / setColumn 用。column/value のペア配列",
+          items: {
+            type: "object",
+            properties: { column: { type: "string" }, value: { type: "string" } },
+            required: ["column", "value"],
+          },
+        },
+        columnToEdit: { type: "string", description: "setColumn 用ショートカット (assignments 単一の代替)" },
+        newColumnValue: { type: "string", description: "setColumn 用ショートカット。'=' 自動付与" },
+        referencedRows: { type: "string", description: "refAction 用。対象行集合の式。'=' 自動付与" },
+        referencedAction: { type: "string", description: "refAction 用。既存 Action 名" },
+        inputAssignments: {
+          type: "array",
+          description: "refAction 用。参照 Action の Inputs[] にバインドする name/value",
+          items: {
+            type: "object",
+            properties: { name: { type: "string" }, value: { type: "string" } },
+            required: ["name", "value"],
+          },
+        },
+        actions: { type: "array", items: { type: "string" }, description: "composite 用。既存 Action 名の配列" },
+        condition: { type: "string", description: "Action.Condition。既定 'true'。'=' 自動付与" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" },
+        icon: { type: "string", description: "FontAwesome / Material Icons 名。既定 'fa-paper-plane'" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "stepName", "tableName", "subtype"],
     },
   },
   {
@@ -1053,6 +1203,35 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_ai_task",
+    description:
+      "AI Task (Summarize / Extract / Categorize / ExtractRows) を Behavior.Tasks に追加し、Process.Nodes に TaskNode を append。タイプごとに異なる固有フィールドを持つ。\n\n## 必須\n- processName / taskName / tableName / taskType\n\n## taskType ごとの追加必須\n- **Summarize**: inputColumns[] / outputColumn (要約: 列群 → 1 列)\n- **Extract**: imageColumn / outputTableColumns[] (画像 OCR → 列群)\n- **Categorize**: inputColumns[] / outputColumn (分類: 列群 → 1 列)\n- **ExtractRows**: inputColumn / tableNameToWriteTo / outputTableColumns[] (画像 → 別テーブルの行群へ書出し)\n\n## 任意\n- additionalInstructions: AI への追加指示テキスト (Summarize/Categorize/ExtractRows)\n- description: 抽出指示テキスト (Extract)\n- saveToTable: 出力をテーブルに保存 (Summarize/Extract/Categorize)\n- forEntireTable: テーブル全体に対して 1 回実行。デフォルト false\n- stepName: Process 内 Step 表示名。省略時は taskName\n- outputTableName: 戻り値スキーマ名。省略時は '${stepName} Output'\n\n## 戻り値の参照\nProcess 内で [<stepName>].[<出力列名>] で参照可能。\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        taskName: { type: "string" },
+        tableName: { type: "string" },
+        taskType: { type: "string", enum: ["Summarize", "Extract", "Categorize", "ExtractRows"] },
+        inputColumns: { type: "array", items: { type: "string" }, description: "Summarize / Categorize 用" },
+        outputColumn: { type: "string", description: "Summarize / Categorize 用 (1 列)" },
+        additionalInstructions: { type: "string" },
+        imageColumn: { type: "string", description: "Extract 用 (入力画像列)" },
+        description: { type: "string", description: "Extract 用 (抽出指示)" },
+        outputTableColumns: { type: "array", items: { type: "string" }, description: "Extract / ExtractRows 用 (出力列の配列)" },
+        inputColumn: { type: "string", description: "ExtractRows 用 (単数の入力列)" },
+        tableNameToWriteTo: { type: "string", description: "ExtractRows 用 (出力先テーブル名)" },
+        saveToTable: { type: "boolean" },
+        forEntireTable: { type: "boolean" },
+        stepName: { type: "string" },
+        outputTableName: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "taskName", "tableName", "taskType"],
+    },
+  },
+  {
     name: "appsheet_add_slice",
     description:
       "Slice (TableSlice) を新規追加する。クライアント側でフィルタ評価・列順カスタムができる。データ秘匿には使えない（→ Security Filter）。デフォルト dry-run。",
@@ -1281,6 +1460,11 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return getBots(args as Parameters<typeof getBots>[0]);
     case "appsheet_refresh_app_def":
       return refreshAppDef(args as Parameters<typeof refreshAppDef>[0]);
+    case "appsheet_refresh_cookie": {
+      const a = (args ?? {}) as { account?: string };
+      const r = await playwrightRefreshCookie({ headless: true, account: a.account });
+      return { success: true, cookieLength: r.cookieLength, message: `✅ Cookie 更新完了 (${r.cookieLength} chars)` };
+    }
     case "appsheet_set_column_flag":
       return setColumnFlag(args as Parameters<typeof setColumnFlag>[0]);
     case "appsheet_set_column_type":
@@ -1329,10 +1513,18 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return setColumnOptions(args as Parameters<typeof setColumnOptions>[0]);
     case "appsheet_add_send_email_task":
       return addSendEmailTask(args as Parameters<typeof addSendEmailTask>[0]);
+    case "appsheet_add_send_notification_task":
+      return addSendNotificationTask(args as Parameters<typeof addSendNotificationTask>[0]);
+    case "appsheet_add_send_sms_task":
+      return addSendSmsTask(args as Parameters<typeof addSendSmsTask>[0]);
+    case "appsheet_add_create_file_task":
+      return addCreateFileTask(args as Parameters<typeof addCreateFileTask>[0]);
     case "appsheet_add_webhook_task":
       return addWebhookTask(args as Parameters<typeof addWebhookTask>[0]);
     case "appsheet_add_branch_step":
       return addBranchStep(args as Parameters<typeof addBranchStep>[0]);
+    case "appsheet_add_data_action_step":
+      return addDataActionStep(args as Parameters<typeof addDataActionStep>[0]);
     case "appsheet_remove_step":
       return removeStep(args as Parameters<typeof removeStep>[0]);
     case "appsheet_move_step":
@@ -1357,6 +1549,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addCallScriptTask(args as Parameters<typeof addCallScriptTask>[0]);
     case "appsheet_set_call_script_task":
       return setCallScriptTask(args as Parameters<typeof setCallScriptTask>[0]);
+    case "appsheet_add_ai_task":
+      return addAiTask(args as Parameters<typeof addAiTask>[0]);
     case "appsheet_create_table":
       return createTable(args as Parameters<typeof createTable>[0]);
     case "appsheet_create_view":

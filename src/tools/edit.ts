@@ -2568,6 +2568,550 @@ function coerceStringArray(value: unknown): string[] {
   return trimmed.split(/[,\n]+/).map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
+// ===== addAiTask =====
+// AI Task (Summarize / Extract / Categorize / ExtractRows) を Behavior.Tasks に追加し、
+// Process.Nodes に TaskNode を append。タイプごとに $type / _version / 固有フィールドが異なる。
+//
+// HAR 観察 (samples/add-AITask*.har) で判明した構造:
+// - Summarize:     $type=AppWorkflowActionAiTaskSummarize / Type=AISummarize / _version=14
+//                  InputColumns[] / OutputColumn / AdditionalInstructions / SaveToTable
+// - Extract:       $type=AppWorkflowActionAiTaskExtract / Type=AIExtract / _version=8
+//                  ImageColumn / Description / OutputTableColumns[] / OutputCustomSchema / SaveToTable
+// - Categorize:    $type=AppWorkflowActionAiTaskCategorize / Type=AICategorize / _version=13
+//                  InputColumns[] / OutputColumn / AdditionalInstructions / SaveToTable
+// - ExtractRows:   $type=AppWorkflowActionAiTaskExtractTable / Type=AIExtractTable / _version=11
+//                  InputColumn (単数!) / TableNameToWriteTo / OutputTableColumns[] / AdditionalInstructions
+export async function addAiTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  tableName: string;
+  taskType: "Summarize" | "Extract" | "Categorize" | "ExtractRows";
+  // Summarize / Categorize 共通
+  inputColumns?: string[];          // Summarize / Categorize: 入力列の配列
+  outputColumn?: string;            // Summarize / Categorize: 出力列名 (1 列)
+  additionalInstructions?: string;  // Summarize / Categorize / ExtractRows: AI への追加指示
+  // Extract 固有
+  imageColumn?: string;             // Extract: 入力 (画像) 列名
+  description?: string;             // Extract: 抽出指示テキスト
+  // Extract / ExtractRows 共通
+  outputTableColumns?: string[];    // Extract / ExtractRows: 出力列名の配列
+  // ExtractRows 固有
+  inputColumn?: string;             // ExtractRows: 入力列 (単数)
+  tableNameToWriteTo?: string;      // ExtractRows: 出力先テーブル名
+  // 共通
+  saveToTable?: boolean;            // Summarize / Extract / Categorize: 出力をテーブルに保存
+  forEntireTable?: boolean;
+  stepName?: string;
+  outputTableName?: string;         // 省略時は auto ("${stepName} Output")
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  taskName: string;
+  taskType: string;
+  processName: string;
+  componentIds?: { task: string; node: string };
+  message: string;
+}> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+
+  if (tasks.find((t) => t.Name === args.taskName)) throw new Error(`Task '${args.taskName}' は既に存在します`);
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+
+  const stepName = args.stepName ?? args.taskName;
+  const outputTableName = args.outputTableName ?? `${stepName} Output`;
+
+  // タイプ別の構成情報
+  const TYPE_CONFIG: Record<string, { typeStr: string; actionType: string; version: number; classFqn: string }> = {
+    Summarize:   { typeStr: "AISummarize",   actionType: "AISummarize",   version: 14, classFqn: "Jeenee.DataTypes.AppWorkflowActionAiTaskSummarize, Jeenee.DataTypes" },
+    Extract:     { typeStr: "AIExtract",     actionType: "AIExtract",     version: 8,  classFqn: "Jeenee.DataTypes.AppWorkflowActionAiTaskExtract, Jeenee.DataTypes" },
+    Categorize:  { typeStr: "AICategorize",  actionType: "AICategorize",  version: 13, classFqn: "Jeenee.DataTypes.AppWorkflowActionAiTaskCategorize, Jeenee.DataTypes" },
+    ExtractRows: { typeStr: "AIExtractTable", actionType: "AIExtractTable", version: 11, classFqn: "Jeenee.DataTypes.AppWorkflowActionAiTaskExtractTable, Jeenee.DataTypes" },
+  };
+  const cfg = TYPE_CONFIG[args.taskType];
+  if (!cfg) throw new Error(`未対応の taskType: ${args.taskType}`);
+
+  // タイプ別バリデーション + 固有フィールド構築
+  const inputCols = coerceStringArray(args.inputColumns);
+  const outputTableCols = coerceStringArray(args.outputTableColumns);
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+
+  // 共通フィールド
+  const baseTask: Record<string, unknown> = {
+    $type: cfg.classFqn,
+    ExprLookup: {},
+    // タイプ固有フィールドが続く
+  };
+  // タイプ固有フィールド
+  if (args.taskType === "Summarize" || args.taskType === "Categorize") {
+    if (inputCols.length === 0) throw new Error(`${args.taskType} には inputColumns (1 件以上) が必要です`);
+    if (!args.outputColumn) throw new Error(`${args.taskType} には outputColumn が必要です`);
+    baseTask.InputColumns = inputCols;
+    baseTask.OutputColumn = args.outputColumn;
+    baseTask.AdditionalInstructions = args.additionalInstructions ?? "";
+    baseTask.SaveToTable = args.saveToTable ?? false;
+  } else if (args.taskType === "Extract") {
+    if (!args.imageColumn) throw new Error(`Extract には imageColumn が必要です`);
+    if (outputTableCols.length === 0) throw new Error(`Extract には outputTableColumns (1 件以上) が必要です`);
+    baseTask.ImageColumn = args.imageColumn;
+    baseTask.Description = args.description ?? "";
+    baseTask.OutputTableColumns = outputTableCols;
+    baseTask.OutputCustomSchema = {
+      ExprLookup: {},
+      Name: "AI Task Extract Output Schema",
+      Attributes: [],
+      AutoSchemaFrom: null,
+      IsAutoCreated: false,
+      IsDependent: false,
+      CreatedBy: null,
+      AutomationPurpose: 0,
+      IsValid: true,
+      Visibility: "NEVER",
+      DisableAutoUpdate: false,
+      ComponentId: null,
+    };
+    baseTask.SaveToTable = args.saveToTable ?? false;
+  } else if (args.taskType === "ExtractRows") {
+    if (!args.inputColumn) throw new Error(`ExtractRows には inputColumn (単数) が必要です`);
+    if (!args.tableNameToWriteTo) throw new Error(`ExtractRows には tableNameToWriteTo (出力先テーブル名) が必要です`);
+    if (outputTableCols.length === 0) throw new Error(`ExtractRows には outputTableColumns (1 件以上) が必要です`);
+    if (!dataSets.find((d) => d.Name === args.tableNameToWriteTo)) {
+      throw new Error(`tableNameToWriteTo '${args.tableNameToWriteTo}' が見つかりません`);
+    }
+    baseTask.InputColumn = args.inputColumn;
+    baseTask.TableNameToWriteTo = args.tableNameToWriteTo;
+    baseTask.OutputTableColumns = outputTableCols;
+    baseTask.AdditionalInstructions = args.additionalInstructions ?? "";
+  }
+
+  // 共通末尾フィールド
+  Object.assign(baseTask, {
+    Name: args.taskName,
+    Type: cfg.typeStr,
+    IsAiTask: true,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? false,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "App owner",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: cfg.version,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  });
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: cfg.actionType,
+    StepName: stepName,
+    OutputTableName: outputTableName,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(baseTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false, taskName: args.taskName, taskType: args.taskType, processName: args.processName,
+      message: `dry-run。AI Task '${args.taskName}' (${args.taskType}) と Process '${args.processName}' への TaskNode を構築。apply: true で送信。戻り値は [${stepName}].[<出力列名>] で参照可能。`,
+    };
+  }
+
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !!created, taskName: args.taskName, taskType: args.taskType, processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created
+      ? `✅ AI Task '${args.taskName}' (${args.taskType}) 作成 + Process '${args.processName}' 連結完了`
+      : `⚠️ saveapp Success だが事後検証で Task 不在`,
+  };
+}
+
+// ===== addSendNotificationTask =====
+// Notification Task ($type=AppWorkflowActionNotification) を Behavior.Tasks に追加し、
+// Process.Nodes に TaskNode (ActionType=Notification) を append。
+// AppSheet モバイルアプリへの push 通知用。
+// HAR (samples/add-Notification.har): _version=3, OutputTableName=null
+export async function addSendNotificationTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  tableName: string;
+  toList?: string[];
+  title?: string;
+  body?: string;
+  deepLink?: string;
+  messageChannelName?: string;
+  useDefaultContent?: boolean;
+  forEntireTable?: boolean;
+  stepName?: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; taskName: string; processName: string; componentIds?: { task: string; node: string }; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  if (tasks.find((t) => t.Name === args.taskName)) throw new Error(`Task '${args.taskName}' は既に存在します`);
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) throw new Error(`Process '${args.processName}' が見つかりません`);
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const stepName = args.stepName ?? args.taskName;
+  const toList = coerceStringArray(args.toList);
+
+  const newTask: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.AppWorkflowActionNotification, Jeenee.DataTypes",
+    ExprLookup: {},
+    Body: args.body ?? null,
+    DeepLink: args.deepLink ?? null,
+    Title: args.title ?? null,
+    To: "",
+    ToList: toList,
+    MessageChannelName: args.messageChannelName ?? "",
+    UseDefaultContent: args.useDefaultContent ?? (!args.title && !args.body),
+    Name: args.taskName,
+    Type: "Notification",
+    IsAiTask: false,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? false,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "App owner",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: 3,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  };
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: "Notification",
+    StepName: stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(newTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, taskName: args.taskName, processName: args.processName,
+      message: `dry-run。Notification Task '${args.taskName}' (To: ${toList.join(',')}) を構築。apply: true で送信。` };
+  }
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return { dryRun: false, applied: !!created, taskName: args.taskName, processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created ? `✅ Notification Task '${args.taskName}' 作成完了` : `⚠️ saveapp Success だが事後検証で Task 不在` };
+}
+
+// ===== addSendSmsTask =====
+// SMS Task ($type=AppWorkflowActionSMS) を Behavior.Tasks に追加。Twilio 連携。
+// HAR (samples/add-SMS.har): _version=1, MessageChannelName="_Custom_Twilio_SMS"
+export async function addSendSmsTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  tableName: string;
+  toList?: string[];               // 電話番号 or AppSheet 列参照
+  fromNumber?: string;             // 送信元電話番号
+  body?: string;
+  bodyTemplate?: string | null;
+  accountSid?: string;             // Twilio Account SID
+  authToken?: string;              // Twilio Auth Token
+  countryCodes?: string[];         // ISO 国コード ["JP", "US"]
+  mediaUrls?: string[];
+  messageChannelName?: string;
+  useDefaultContent?: boolean;
+  forEntireTable?: boolean;
+  stepName?: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; taskName: string; processName: string; componentIds?: { task: string; node: string }; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  if (tasks.find((t) => t.Name === args.taskName)) throw new Error(`Task '${args.taskName}' は既に存在します`);
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) throw new Error(`Process '${args.processName}' が見つかりません`);
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const stepName = args.stepName ?? args.taskName;
+  const toList = coerceStringArray(args.toList);
+  const countryCodeList = coerceStringArray(args.countryCodes);
+  const mediaUrlList = coerceStringArray(args.mediaUrls);
+
+  const newTask: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.AppWorkflowActionSMS, Jeenee.DataTypes",
+    ExprLookup: {},
+    AccountSid: args.accountSid ?? "",
+    AuthToken: args.authToken ?? "",
+    CountryCodes: null,
+    CountryCodeList: countryCodeList.length > 0 ? countryCodeList : ["JP"],
+    From: args.fromNumber ?? "",
+    To: "",
+    ToList: toList,
+    MediaUrls: null,
+    MediaUrlList: mediaUrlList,
+    Body: args.body ?? null,
+    BodyTemplate: args.bodyTemplate ?? null,
+    BodyTemplateDataSourceName: null,
+    MessageChannelName: args.messageChannelName ?? "_Custom_Twilio_SMS",
+    UseDefaultContent: args.useDefaultContent ?? (!args.body),
+    Name: args.taskName,
+    Type: "SMS",
+    IsAiTask: false,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? false,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "App owner",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: 1,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  };
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: "SMS",
+    StepName: stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(newTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, taskName: args.taskName, processName: args.processName,
+      message: `dry-run。SMS Task '${args.taskName}' (To: ${toList.join(',')}) を構築。apply: true で送信。` };
+  }
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return { dryRun: false, applied: !!created, taskName: args.taskName, processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created ? `✅ SMS Task '${args.taskName}' 作成完了` : `⚠️ saveapp Success だが事後検証で Task 不在` };
+}
+
+// ===== addCreateFileTask =====
+// CreateFile Task ($type=AppWorkflowActionMakeDoc, Type=MakeDoc) を Behavior.Tasks に追加。
+// PDF / DOCX / XLSX / HTML / CSV 生成。
+// HAR (samples/add-CreateFile.har): _version=8
+export async function addCreateFileTask(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  taskName: string;
+  tableName: string;
+  contentType: "PDF" | "DOCX" | "XLSX" | "HTML" | "CSV";
+  bodyTemplate: string;            // Google Doc DocId 形式 (例 'DocId=1t7xzA2...') or 他データソース
+  bodyTemplateDataSourceName?: string;  // "google" 等
+  fileStore?: string;              // "_Default" or 他ファイルストア
+  folderPath?: string;             // 式 ('=' 自動付与)
+  fileNamePrefix?: string;         // 式 ('=' 自動付与)
+  disableTimestampSuffix?: boolean;
+  pageOrientation?: "Portrait" | "Landscape" | "NotSpecified";
+  pageSize?: "A4" | "Letter" | "Legal" | "A3" | "A5" | "NotSpecified";
+  pageHeight?: number;
+  pageWidth?: number;
+  useCustomMargins?: boolean;
+  marginTop?: number;
+  marginRight?: number;
+  marginBottom?: number;
+  marginLeft?: number;
+  forEntireTable?: boolean;
+  stepName?: string;
+  apply?: boolean;
+}): Promise<{ dryRun: boolean; applied: boolean; taskName: string; processName: string; componentIds?: { task: string; node: string }; message: string; }> {
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const tasks = (behavior.Tasks as Array<Record<string, unknown>> | undefined) ?? [];
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  if (tasks.find((t) => t.Name === args.taskName)) throw new Error(`Task '${args.taskName}' は既に存在します`);
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) throw new Error(`Process '${args.processName}' が見つかりません`);
+  const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+
+  const taskComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const stepName = args.stepName ?? args.taskName;
+
+  const newTask: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.AppWorkflowActionMakeDoc, Jeenee.DataTypes",
+    ExprLookup: {},
+    ContentType: args.contentType,
+    BodyTemplate: args.bodyTemplate,
+    BodyTemplateDataSourceName: args.bodyTemplateDataSourceName ?? null,
+    FileStore: args.fileStore ?? "_Default",
+    FolderPath: args.folderPath ? normalizeFormula(args.folderPath) : "",
+    FileNamePrefix: args.fileNamePrefix ? normalizeFormula(args.fileNamePrefix) : "",
+    DisableTimestampSuffix: args.disableTimestampSuffix ?? false,
+    AttachmentPageOrientation: args.pageOrientation ?? "NotSpecified",
+    AttachmentPageSize: args.pageSize ?? "NotSpecified",
+    AttachmentPageHeight: args.pageHeight ?? 0,
+    AttachmentPageWidth: args.pageWidth ?? 0,
+    UseCustomMargins: args.useCustomMargins ?? false,
+    AttachmentPageMarginTop: args.marginTop ?? 0,
+    AttachmentPageMarginRight: args.marginRight ?? 0,
+    AttachmentPageMarginBottom: args.marginBottom ?? 0,
+    AttachmentPageMarginLeft: args.marginLeft ?? 0,
+    Name: args.taskName,
+    Type: "MakeDoc",
+    IsAiTask: false,
+    TableName: args.tableName,
+    ForEntireTable: args.forEntireTable ?? false,
+    AlwaysRunAsDeployed: false,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    CreatedBy: "App owner",
+    Inputs: [],
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: taskComponentId,
+    _isNew: true,
+    _version: 8,
+    _index: tasks.length,
+    _path: `Behavior.Tasks[${tasks.length}]`,
+  };
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.TaskNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_TASK",
+    Task: args.taskName,
+    InputAssignments: [],
+    ActionType: "MakeDoc",
+    StepName: stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  if (!behavior.Tasks) behavior.Tasks = [];
+  (behavior.Tasks as Array<Record<string, unknown>>).push(newTask);
+  if (!targetProcess.Nodes) targetProcess.Nodes = [];
+  (targetProcess.Nodes as Array<Record<string, unknown>>).push(newNode);
+
+  if (!args.apply) {
+    return { dryRun: true, applied: false, taskName: args.taskName, processName: args.processName,
+      message: `dry-run。CreateFile Task '${args.taskName}' (${args.contentType}) を構築。apply: true で送信。` };
+  }
+  const result = await postSaveApp(credential.appId, appName, app);
+  const refreshed = result.app ?? (await fetchLoadApp(appName)).app;
+  const refreshedTasks = ((refreshed as Record<string, unknown>).Behavior as Record<string, unknown>)?.Tasks as Array<Record<string, unknown>> | undefined;
+  const created = refreshedTasks?.find((t) => t.Name === args.taskName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+  return { dryRun: false, applied: !!created, taskName: args.taskName, processName: args.processName,
+    componentIds: { task: taskComponentId, node: nodeComponentId },
+    message: created ? `✅ CreateFile Task '${args.taskName}' (${args.contentType}) 作成完了` : `⚠️ saveapp Success だが事後検証で Task 不在` };
+}
+
 // ===== addSendEmailTask =====
 // Email Task ($type=AppWorkflowActionEmail) を Behavior.Tasks に追加し、
 // Process.Nodes に TaskNode (NodeType=RUN_TASK, ActionType=Email) を append
@@ -4960,4 +5504,365 @@ export async function setColumnOptions(args: {
   let msg = `✅ Column options 更新完了 (${Object.keys(changes).length} 件)`;
   if (unknownKeys.length) msg += ` / 未知キー無視: ${unknownKeys.join(', ')}`;
   return { dryRun: false, applied: true, table: args.tableName, column: lookupName, changes, unknownKeys, message: msg };
+}
+
+// ============================================================
+// addDataActionStep — Bot Process に Data Action (RUN_ACTION) Step を追加
+// ============================================================
+// HAR キャプチャ (samples/captured/add_data_action_v2-*) で確認済の payload 仕様:
+//   - AppData.DataActions[] に Action 本体を追加 (5 サブタイプで ActionDefinition 分岐)
+//   - Behavior.AppProcesses[].Nodes[] に RUN_ACTION Step を追加 (5 サブタイプ共通)
+// Phase 1 では ConditionEvaluatable / ValueEvaluatable / ExprLookup は null/{} で送信。
+// (HAR ではフル構造体だが、composite サブタイプでは null だったので Editor 側 fallback あり)
+
+type DataActionSubtype = "addRow" | "deleteRow" | "setColumn" | "refAction" | "composite";
+
+const DATA_ACTION_SUBTYPE_MAP: Record<DataActionSubtype, { actionType: string; defType: string }> = {
+  addRow:    { actionType: "ADD_RECORD_TO",     defType: "Jeenee.DataTypes.DataActionAddRowTo, Jeenee.DataTypes" },
+  deleteRow: { actionType: "DELETE_RECORD",     defType: "Jeenee.DataTypes.DataActionDeleteRecord, Jeenee.DataTypes" },
+  setColumn: { actionType: "SET_COLUMN_VALUE",  defType: "Jeenee.DataTypes.DataActionSetColumnValue, Jeenee.DataTypes" },
+  refAction: { actionType: "REF_ACTION",        defType: "Jeenee.DataTypes.DataActionRef, Jeenee.DataTypes" },
+  composite: { actionType: "COMPOSITE",         defType: "Jeenee.DataTypes.DataActionComposite, Jeenee.DataTypes" },
+};
+
+interface BuildDataActionDefParams {
+  referencedTable?: string;
+  assignments?: Array<{ column: string; value: string }>;
+  columnToEdit?: string;
+  newColumnValue?: string;
+  referencedRows?: string;
+  referencedAction?: string;
+  inputAssignments?: Array<{ name: string; value: string }>;
+  actions?: string[];
+  prominence: string;
+  needsConfirmation: boolean;
+  confirmationMessage: string;
+}
+
+function buildDataActionDefinition(
+  subtype: DataActionSubtype,
+  p: BuildDataActionDefParams,
+): { actionDefinition: Record<string, unknown>; actionSettings: string; topLevelColumnToEdit: string | null } {
+  const { defType } = DATA_ACTION_SUBTYPE_MAP[subtype];
+  const prom = {
+    Prominence: p.prominence,
+    NeedsConfirmation: p.needsConfirmation,
+    ConfirmationMessage: p.confirmationMessage,
+  };
+
+  let def: Record<string, unknown>;
+  let topLevelColumnToEdit: string | null = null;
+
+  switch (subtype) {
+    case "addRow": {
+      if (!p.referencedTable) throw new Error("addRow は referencedTable 必須");
+      const assignments = (p.assignments ?? []).map((a) => ({
+        ColumnToEdit: a.column,
+        NewColumnValue: normalizeFormula(a.value),
+      }));
+      def = {
+        $type: defType,
+        ReferencedTable: p.referencedTable,
+        Assignments: assignments,
+        InputParametersUsed: null,
+        ...prom,
+        ModifiesData: true,
+        BulkApplicable: true,
+      };
+      break;
+    }
+    case "deleteRow": {
+      def = {
+        $type: defType,
+        InputParametersUsed: null,
+        ...prom,
+        ModifiesData: true,
+        BulkApplicable: true,
+      };
+      break;
+    }
+    case "setColumn": {
+      const rawAssignments = p.assignments && p.assignments.length > 0
+        ? p.assignments
+        : (p.columnToEdit && p.newColumnValue !== undefined
+            ? [{ column: p.columnToEdit, value: p.newColumnValue }]
+            : []);
+      if (rawAssignments.length === 0) throw new Error("setColumn は assignments[] か columnToEdit+newColumnValue が必須");
+      const assignments = rawAssignments.map((a) => ({
+        ColumnToEdit: a.column,
+        NewColumnValue: normalizeFormula(a.value),
+      }));
+      // top-level ColumnToEdit/NewColumnValue は HAR で先頭 assignment と同じ値が入る
+      topLevelColumnToEdit = assignments[0].ColumnToEdit;
+      def = {
+        $type: defType,
+        Assignments: assignments,
+        ColumnToEdit: assignments[0].ColumnToEdit,
+        NewColumnValue: assignments[0].NewColumnValue,
+        InputParametersUsed: null,
+        ...prom,
+        ModifiesData: true,
+        BulkApplicable: true,
+      };
+      break;
+    }
+    case "refAction": {
+      if (!p.referencedTable || !p.referencedRows || !p.referencedAction) {
+        throw new Error("refAction は referencedTable / referencedRows / referencedAction 必須");
+      }
+      const inputAssignments = (p.inputAssignments ?? []).map((ia) => ({
+        Name: ia.name,
+        Value: normalizeFormula(ia.value),
+      }));
+      def = {
+        $type: defType,
+        ReferencedTable: p.referencedTable,
+        ReferencedRows: normalizeFormula(p.referencedRows),
+        ReferencedAction: p.referencedAction,
+        InputAssignments: inputAssignments,
+        InputParametersUsed: null,
+        ...prom,
+        // HAR では false。参照 Action 側の ModifiesData が真の値で、Editor 後追いで更新する模様
+        ModifiesData: false,
+        BulkApplicable: true,
+      };
+      break;
+    }
+    case "composite": {
+      if (!p.actions || p.actions.length === 0) throw new Error("composite は actions[] が必須");
+      def = {
+        $type: defType,
+        Actions: p.actions.map((a) => ({ ActionName: a })),
+        ...prom,
+        ModifiesData: true,
+        BulkApplicable: true,
+      };
+      break;
+    }
+  }
+
+  // ActionSettings は ActionDefinition から $type を除いた object の JSON 文字列 (HAR 観察)
+  const settingsObj = { ...def };
+  delete settingsObj.$type;
+  return { actionDefinition: def, actionSettings: JSON.stringify(settingsObj), topLevelColumnToEdit };
+}
+
+export async function addDataActionStep(args: {
+  appId?: string;
+  appName?: string;
+  processName: string;
+  stepName: string;
+  tableName: string;
+  subtype: DataActionSubtype;
+
+  actionName?: string;
+
+  // subtype 別 (任意)
+  referencedTable?: string;
+  assignments?: Array<{ column: string; value: string }>;
+  columnToEdit?: string;
+  newColumnValue?: string;
+  referencedRows?: string;
+  referencedAction?: string;
+  inputAssignments?: Array<{ name: string; value: string }>;
+  actions?: string[];
+
+  // Action オプション
+  condition?: string;
+  prominence?: "Display_Prominently" | "Display_Overlay" | "Display_Inline" | "Do_Not_Display";
+  needsConfirmation?: boolean;
+  confirmationMessage?: string;
+  icon?: string;
+
+  apply?: boolean;
+}): Promise<{
+  dryRun: boolean;
+  applied: boolean;
+  processName: string;
+  stepName: string;
+  actionName: string;
+  subtype: DataActionSubtype;
+  componentIds?: { action: string; node: string };
+  message: string;
+}> {
+  if (!args.processName) throw new Error("processName は必須");
+  if (!args.stepName) throw new Error("stepName は必須");
+  if (!args.tableName) throw new Error("tableName は必須");
+  if (!args.subtype) throw new Error("subtype は必須 (addRow / deleteRow / setColumn / refAction / composite)");
+  if (!DATA_ACTION_SUBTYPE_MAP[args.subtype]) throw new Error(`subtype '${args.subtype}' は未知。許容: ${Object.keys(DATA_ACTION_SUBTYPE_MAP).join(', ')}`);
+
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  // ----- 既存構造の取得 + 検証 -----
+  const behavior = (app as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  if (!behavior) throw new Error("Behavior が見つかりません");
+  const processes = (behavior.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const targetProcess = processes.find((p) => p.Name === args.processName);
+  if (!targetProcess) {
+    const known = processes.map((p) => p.Name as string).join(", ");
+    throw new Error(`Process '${args.processName}' が見つかりません。既知: ${known}`);
+  }
+
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  if (!appData) throw new Error("AppData が見つかりません");
+  const dataSets = (appData.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) {
+    throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+  }
+  const dataActions = (appData.DataActions as Array<Record<string, unknown>> | undefined) ?? [];
+
+  // referencedTable 検証
+  if ((args.subtype === "addRow" || args.subtype === "refAction") && args.referencedTable) {
+    if (!dataSets.find((d) => d.Name === args.referencedTable)) {
+      throw new Error(`referencedTable '${args.referencedTable}' が見つかりません`);
+    }
+  }
+  // referencedAction 検証
+  if (args.subtype === "refAction" && args.referencedAction) {
+    if (!dataActions.find((a) => a.Name === args.referencedAction)) {
+      throw new Error(`referencedAction '${args.referencedAction}' は AppData.DataActions に存在しません`);
+    }
+  }
+  // composite.actions[] 検証
+  if (args.subtype === "composite" && args.actions) {
+    const missing = args.actions.filter((name) => !dataActions.find((a) => a.Name === name));
+    if (missing.length > 0) {
+      throw new Error(`composite.actions[] の以下が AppData.DataActions に存在しません: ${missing.join(', ')}`);
+    }
+  }
+
+  // Step 名重複チェック (同一 Process 内のみ)
+  const existingNodes = (targetProcess.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+  if (existingNodes.find((n) => n.StepName === args.stepName)) {
+    throw new Error(`Step '${args.stepName}' は Process '${args.processName}' に既に存在します`);
+  }
+
+  // Action 名生成 + 重複チェック
+  const actionName = args.actionName ?? `${args.stepName} Action - 1`;
+  if (dataActions.find((a) => a.Name === actionName)) {
+    throw new Error(`Action '${actionName}' は AppData.DataActions に既に存在します。actionName を明示指定してください`);
+  }
+
+  // ----- ActionDefinition 構築 -----
+  const { actionDefinition, actionSettings, topLevelColumnToEdit } = buildDataActionDefinition(args.subtype, {
+    referencedTable: args.referencedTable,
+    assignments: args.assignments,
+    columnToEdit: args.columnToEdit,
+    newColumnValue: args.newColumnValue,
+    referencedRows: args.referencedRows,
+    referencedAction: args.referencedAction,
+    inputAssignments: args.inputAssignments,
+    actions: args.actions,
+    prominence: args.prominence ?? "Display_Prominently",
+    needsConfirmation: args.needsConfirmation ?? false,
+    confirmationMessage: args.confirmationMessage ?? "",
+  });
+
+  const actionComponentId = generateComponentId();
+  const nodeComponentId = generateComponentId();
+  const condition = normalizeFormula(args.condition ?? "true");
+
+  const newAction: Record<string, unknown> = {
+    ExprLookup: {},
+    Value: null,
+    ValueEvaluatable: null,
+    ConditionEvaluatable: null,  // Phase 1: Editor が再生成する想定
+    ActionType: DATA_ACTION_SUBTYPE_MAP[args.subtype].actionType,
+    ActionSettings: actionSettings,
+    IsEmbedded: false,
+    Scope: "PROCESS",
+    Inputs: [],
+    Name: actionName,
+    DisplayName: null,
+    CreatedBy: "App owner",
+    Icon: args.icon ?? "fa-paper-plane",
+    IconRunnerUps: null,
+    Table: args.tableName,
+    TableScope: false,
+    Condition: condition,
+    ColumnToEdit: topLevelColumnToEdit,
+    ColumnAttachment: topLevelColumnToEdit,
+    ActionOrder: 1,
+    ActionDefinition: actionDefinition,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: actionComponentId,
+    _isNew: true,
+    _version: 0,
+    _index: dataActions.length,
+    _path: `AppData.DataActions[${dataActions.length}]`,
+  };
+
+  const newNode: Record<string, unknown> = {
+    $type: "Jeenee.DataTypes.ProcessNodes.RunActionNode, Jeenee.DataTypes",
+    ExprLookup: {},
+    NodeType: "RUN_ACTION",
+    Action: actionName,
+    InputAssignments: [],
+    StepName: args.stepName,
+    OutputTableName: null,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: nodeComponentId,
+  };
+
+  // applyFn (409 retry 対応)
+  const applyFn = (a: AppDef) => {
+    const ad = (a as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+    if (!ad) throw new Error("AppData が見つかりません (リトライ時)");
+    const beh = (a as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+    if (!beh) throw new Error("Behavior が見つかりません (リトライ時)");
+    if (!ad.DataActions) ad.DataActions = [];
+    (ad.DataActions as Array<Record<string, unknown>>).push(newAction);
+    const procs = (beh.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+    const tp = procs.find((p) => p.Name === args.processName);
+    if (!tp) throw new Error(`Process '${args.processName}' が見つかりません (リトライ時)`);
+    if (!tp.Nodes) tp.Nodes = [];
+    (tp.Nodes as Array<Record<string, unknown>>).push(newNode);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true,
+      applied: false,
+      processName: args.processName,
+      stepName: args.stepName,
+      actionName,
+      subtype: args.subtype,
+      message: `dry-run。${args.subtype} Action '${actionName}' + RUN_ACTION Step '${args.stepName}' を Process '${args.processName}' に追加。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedAppData = (refreshed as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  const refreshedActions = (refreshedAppData?.DataActions as Array<Record<string, unknown>> | undefined) ?? [];
+  const refreshedBeh = (refreshed as Record<string, unknown>).Behavior as Record<string, unknown> | undefined;
+  const refreshedProcs = (refreshedBeh?.AppProcesses as Array<Record<string, unknown>> | undefined) ?? [];
+  const refreshedProc = refreshedProcs.find((p) => p.Name === args.processName);
+  const refreshedNodes = (refreshedProc?.Nodes as Array<Record<string, unknown>> | undefined) ?? [];
+
+  const createdAction = refreshedActions.find((a) => a.Name === actionName);
+  const createdNode = refreshedNodes.find((n) => n.StepName === args.stepName && n.Action === actionName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  const ok = !!createdAction && !!createdNode;
+  return {
+    dryRun: false,
+    applied: ok,
+    processName: args.processName,
+    stepName: args.stepName,
+    actionName,
+    subtype: args.subtype,
+    componentIds: { action: actionComponentId, node: nodeComponentId },
+    message: ok
+      ? `✅ ${args.subtype} Step '${args.stepName}' (Action '${actionName}') を Process '${args.processName}' に追加完了`
+      : `⚠️ saveapp Success だが事後検証で ${createdAction ? "Step" : createdNode ? "Action" : "Step・Action 双方"} 不在`,
+  };
 }
