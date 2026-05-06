@@ -6192,3 +6192,266 @@ export async function addWaitStep(args: {
       : `⚠️ saveapp Success だが事後検証で Step 不在`,
   };
 }
+
+// ============================================================
+// UI Action 系 — View ボタンに表示する Action (NAVIGATE/EMAIL/CALL/SMS/etc)
+// ============================================================
+// 本番アプリ snapshot 解析で 8 ActionType を確認 (samples/action-shapes/)。
+// AppData.DataActions[] に Action を append するだけのシンプル構造。
+
+type UiActionType =
+  | "linkToView"
+  | "email"
+  | "call"
+  | "sms"
+  | "openFile"
+  | "exportView"
+  | "copyEdit"
+  | "navigateDifferentApp";
+
+const UI_ACTION_TYPE_MAP: Record<UiActionType, { actionType: string; defType: string; defaultProminence: string; modifiesData: boolean }> = {
+  linkToView:           { actionType: "NAVIGATE_APP",            defType: "Jeenee.DataTypes.DataActionNavigateApp, Jeenee.DataTypes",   defaultProminence: "Display_Inline",       modifiesData: false },
+  email:                { actionType: "EMAIL",                   defType: "Jeenee.DataTypes.DataActionEmail, Jeenee.DataTypes",        defaultProminence: "Display_Inline",       modifiesData: false },
+  call:                 { actionType: "CALL",                    defType: "Jeenee.DataTypes.DataActionPhoneCall, Jeenee.DataTypes",    defaultProminence: "Display_Inline",       modifiesData: false },
+  sms:                  { actionType: "SMS",                     defType: "Jeenee.DataTypes.DataActionTextMessage, Jeenee.DataTypes",  defaultProminence: "Display_Inline",       modifiesData: false },
+  openFile:             { actionType: "OPEN_FILE",               defType: "Jeenee.DataTypes.DataActionOpenFile, Jeenee.DataTypes",     defaultProminence: "Display_Inline",       modifiesData: false },
+  exportView:           { actionType: "EXPORT_VIEW",             defType: "Jeenee.DataTypes.DataActionExportView, Jeenee.DataTypes",   defaultProminence: "Display_Overlay",      modifiesData: false },
+  copyEdit:             { actionType: "COPY_EDIT_ROW",           defType: "Jeenee.DataTypes.DataActionCopyRow, Jeenee.DataTypes",      defaultProminence: "Display_Prominently",  modifiesData: true },
+  navigateDifferentApp: { actionType: "NAVIGATE_DIFFERENT_APP",  defType: "Jeenee.DataTypes.DataActionNavigateApp, Jeenee.DataTypes",  defaultProminence: "Display_Prominently",  modifiesData: false },
+};
+
+interface UiActionCommonArgs {
+  appId?: string;
+  appName?: string;
+  tableName: string;
+  actionName: string;
+  condition?: string;
+  prominence?: "Display_Prominently" | "Display_Overlay" | "Display_Inline" | "Do_Not_Display";
+  needsConfirmation?: boolean;
+  confirmationMessage?: string;
+  icon?: string;
+  apply?: boolean;
+}
+
+interface UiActionResult {
+  dryRun: boolean;
+  applied: boolean;
+  actionName: string;
+  actionType: string;
+  componentId?: string;
+  message: string;
+}
+
+/**
+ * UI Action の共通ペイロードを構築 + DataActions に push して saveapp。
+ * 各 UI Action ツールから呼ばれるコア関数。
+ */
+async function _addUiActionCore(
+  uiType: UiActionType,
+  args: UiActionCommonArgs,
+  definitionFields: Record<string, unknown>,
+): Promise<UiActionResult> {
+  if (!args.tableName) throw new Error("tableName は必須");
+  if (!args.actionName) throw new Error("actionName は必須");
+
+  const credential = resolveCredential(args.appId);
+  const appName = await lookupAppName(credential.appId, args.appName);
+  const { app } = await fetchLoadApp(appName);
+
+  const appData = (app as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  if (!appData) throw new Error("AppData が見つかりません");
+  const dataSets = (appData.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!dataSets.find((d) => d.Name === args.tableName)) {
+    throw new Error(`テーブル '${args.tableName}' が見つかりません`);
+  }
+  const dataActions = (appData.DataActions as Array<Record<string, unknown>> | undefined) ?? [];
+  if (dataActions.find((a) => a.Name === args.actionName)) {
+    throw new Error(`Action '${args.actionName}' は既に存在します`);
+  }
+
+  const meta = UI_ACTION_TYPE_MAP[uiType];
+  const componentId = generateComponentId();
+  // condition は省略時 null (既存 addOpenUrlAction の慣行)
+  const condition = args.condition ? normalizeFormula(args.condition) : null;
+  const prominence = args.prominence ?? meta.defaultProminence;
+  const needsConfirmation = args.needsConfirmation ?? false;
+  const confirmationMessage = args.confirmationMessage ?? "";
+  // EXPORT_VIEW は table-level なので TableScope=true (production HAR で観測)
+  const tableScope = uiType === "exportView";
+
+  // ColumnToEdit/ColumnAttachment は列依存の Action では列名を埋める
+  // (production: '[Mail]' のような列参照を使う Action は ColumnToEdit に 'Mail' を設定)
+  const colName = (() => {
+    const ref =
+      (definitionFields.EmailTo as string | undefined) ??
+      (definitionFields.Number as string | undefined) ??
+      (definitionFields.FileTarget as string | undefined);
+    if (!ref) return null;
+    const m = ref.match(/^\[([^\]]+)\]$/);
+    return m ? m[1] : null;
+  })();
+
+  const actionDefinition: Record<string, unknown> = {
+    $type: meta.defType,
+    ...definitionFields,
+    Prominence: prominence,
+    NeedsConfirmation: needsConfirmation,
+    ConfirmationMessage: confirmationMessage,
+    ModifiesData: meta.modifiesData,
+    BulkApplicable: false,
+  };
+  const settingsObj = { ...actionDefinition };
+  delete settingsObj.$type;
+  const actionSettings = JSON.stringify(settingsObj);
+
+  const newAction: Record<string, unknown> = {
+    ExprLookup: {},
+    Value: null,
+    ValueEvaluatable: null,
+    ConditionEvaluatable: null,
+    ActionType: meta.actionType,
+    ActionSettings: actionSettings,
+    IsEmbedded: false,
+    Scope: "UNSET",  // UI Action は UNSET (既存 addOpenUrlAction + production sample 一致)
+    Inputs: [],
+    Name: args.actionName,
+    DisplayName: null,
+    CreatedBy: "App owner",
+    Icon: args.icon ?? "fa-paper-plane",
+    IconRunnerUps: null,
+    Table: args.tableName,
+    TableScope: tableScope,
+    Condition: condition,
+    ColumnToEdit: colName,
+    ColumnAttachment: colName,
+    ActionOrder: dataActions.length,
+    ActionDefinition: actionDefinition,
+    Comment: null,
+    IsValid: true,
+    Visibility: "ALWAYS",
+    DisableAutoUpdate: false,
+    ComponentId: componentId,
+    _isNew: true,
+    _version: 0,
+    _index: dataActions.length,
+    _path: `AppData.DataActions[${dataActions.length}]`,
+  };
+
+  const applyFn = (a: AppDef) => {
+    const ad = (a as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+    if (!ad) throw new Error("AppData が見つかりません (リトライ時)");
+    if (!ad.DataActions) ad.DataActions = [];
+    (ad.DataActions as Array<Record<string, unknown>>).push(newAction);
+  };
+  applyFn(app);
+
+  if (!args.apply) {
+    return {
+      dryRun: true, applied: false,
+      actionName: args.actionName, actionType: meta.actionType,
+      message: `dry-run。${meta.actionType} Action '${args.actionName}' をテーブル '${args.tableName}' に追加。apply: true で送信。`,
+    };
+  }
+
+  const { refreshed } = await applyChangesAndSave(credential, appName, applyFn, app);
+  const refreshedAppData = (refreshed as Record<string, unknown>).AppData as Record<string, unknown> | undefined;
+  const refreshedActions = (refreshedAppData?.DataActions as Array<Record<string, unknown>> | undefined) ?? [];
+  const created = refreshedActions.find((a) => a.Name === args.actionName);
+  await writeFile(snapshotPath(credential.appId), JSON.stringify(refreshed, null, 2), "utf8");
+
+  return {
+    dryRun: false, applied: !!created,
+    actionName: args.actionName, actionType: meta.actionType,
+    componentId,
+    message: created
+      ? `✅ ${meta.actionType} Action '${args.actionName}' をテーブル '${args.tableName}' に追加完了`
+      : `⚠️ saveapp Success だが事後検証で Action 不在`,
+  };
+}
+
+/** LINKTOVIEW / LINKTOROW / LINKTOFILTEREDVIEW の式を構築 */
+function buildLinkToViewExpr(args: { targetView?: string; targetRow?: string; navigateTarget?: string }): string {
+  if (args.navigateTarget) return normalizeFormula(args.navigateTarget);
+  if (!args.targetView) throw new Error("targetView か navigateTarget のいずれか必須");
+  // 同時指定なら LINKTOROW
+  if (args.targetRow) {
+    const row = args.targetRow.startsWith("[") || args.targetRow.startsWith("=") ? args.targetRow.replace(/^=/, "") : `[${args.targetRow}]`;
+    return `=LINKTOROW(${row}, "${args.targetView}")`;
+  }
+  return `=LINKTOVIEW("${args.targetView}")`;
+}
+
+// ===== addLinkToViewAction =====
+export async function addLinkToViewAction(args: UiActionCommonArgs & {
+  targetView?: string;       // 対象 View 名 (LINKTOVIEW / LINKTOROW 用)
+  targetRow?: string;        // 行参照式 (LINKTOROW 用、例: "[ParentID]" or "ParentID")
+  navigateTarget?: string;   // 任意の式を直接指定 (上記 2 を使わない場合)
+}): Promise<UiActionResult> {
+  const expr = buildLinkToViewExpr({ targetView: args.targetView, targetRow: args.targetRow, navigateTarget: args.navigateTarget });
+  return _addUiActionCore("linkToView", args, { NavigateTarget: expr });
+}
+
+// ===== addEmailAction =====
+export async function addEmailAction(args: UiActionCommonArgs & {
+  emailTo: string;           // 宛先列参照 (例: "[Mail]") or 式
+  subject?: string;
+  body?: string;
+}): Promise<UiActionResult> {
+  if (!args.emailTo) throw new Error("emailTo は必須 (例: '[Mail]' or '=USEREMAIL()')");
+  return _addUiActionCore("email", args, {
+    EmailTo: args.emailTo,
+    Subject: args.subject ?? null,
+    Body: args.body ?? null,
+  });
+}
+
+// ===== addCallAction =====
+export async function addCallAction(args: UiActionCommonArgs & {
+  number: string;            // 電話番号列参照 (例: "[電話番号]")
+}): Promise<UiActionResult> {
+  if (!args.number) throw new Error("number は必須 (例: '[電話番号]')");
+  return _addUiActionCore("call", args, { Number: args.number });
+}
+
+// ===== addSmsAction =====
+export async function addSmsAction(args: UiActionCommonArgs & {
+  number: string;
+  message?: string;
+}): Promise<UiActionResult> {
+  if (!args.number) throw new Error("number は必須");
+  return _addUiActionCore("sms", args, {
+    Number: args.number,
+    Message: args.message ?? "",
+  });
+}
+
+// ===== addOpenFileAction =====
+export async function addOpenFileAction(args: UiActionCommonArgs & {
+  fileTarget: string;        // ファイル列参照 (例: "[請求書PDF]")
+}): Promise<UiActionResult> {
+  if (!args.fileTarget) throw new Error("fileTarget は必須 (例: '[請求書PDF]')");
+  return _addUiActionCore("openFile", args, { FileTarget: args.fileTarget });
+}
+
+// ===== addExportViewAction =====
+export async function addExportViewAction(args: UiActionCommonArgs & {
+  csvLocale?: string;        // 既定 "ja-JP"
+}): Promise<UiActionResult> {
+  return _addUiActionCore("exportView", args, { CsvLocale: args.csvLocale ?? "ja-JP" });
+}
+
+// ===== addCopyEditAction =====
+export async function addCopyEditAction(args: UiActionCommonArgs): Promise<UiActionResult> {
+  return _addUiActionCore("copyEdit", args, {});
+}
+
+// ===== addNavigateDifferentAppAction =====
+export async function addNavigateDifferentAppAction(args: UiActionCommonArgs & {
+  targetAppName: string;     // 対象アプリの内部名 (例: "助成金アプリ-10612252")
+}): Promise<UiActionResult> {
+  if (!args.targetAppName) throw new Error("targetAppName は必須 (例: '助成金アプリ-10612252')");
+  return _addUiActionCore("navigateDifferentApp", args, {
+    NavigateTarget: `=LINKTOAPP("${args.targetAppName}")`,
+  });
+}
+
