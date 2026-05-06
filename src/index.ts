@@ -85,6 +85,9 @@ import {
   addWebhookTask,
   addBranchStep,
   addDataActionStep,
+  addCallProcessStep,
+  addReturnStep,
+  addWaitStep,
   removeStep,
   moveStep,
   setBotTrigger,
@@ -937,6 +940,77 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_call_process_step",
+    description:
+      "Bot の Process に別 Process を呼び出す Step を追加する (CallProcessNode / NodeType=CALL_PROCESS)。\n\n## 必須\n- processName: Step を追加する Process 名\n- stepName: 表示名\n- targetProcessName: 呼ぶ先 Process 名 (AppProcesses に存在することを検証)\n\n## 任意\n- callMode: 既定 'ADD'\n- arguments: [{name, value}] — 呼ぶ先 Process の Inputs[] にバインドする入力。value は '=' 自動付与\n- comment\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string" },
+        targetProcessName: { type: "string" },
+        callMode: { type: "string", enum: ["ADD"] },
+        arguments: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { name: { type: "string" }, value: { type: "string" } },
+            required: ["name", "value"],
+          },
+        },
+        comment: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "stepName", "targetProcessName"],
+    },
+  },
+  {
+    name: "appsheet_add_return_step",
+    description:
+      "sub-process が呼び出し元に値を返す Step を追加する (ReturnNode / NodeType=RETURN)。通常は別 Process から CallProcess で呼ばれる側の Process に置く。\n\n## 必須\n- processName / stepName\n- returnValues: [{name, value}] — name=戻り値名 (ColumnToEdit)、value=式 ('=' 自動付与)\n\n## 任意\n- comment\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string" },
+        returnValues: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { name: { type: "string" }, value: { type: "string" } },
+            required: ["name", "value"],
+          },
+        },
+        comment: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "stepName", "returnValues"],
+    },
+  },
+  {
+    name: "appsheet_add_wait_step",
+    description:
+      "Process 内で待機する Step を追加する (WaitNode / NodeType=WAIT)。3 種類のサブタイプ:\n\n## サブタイプ (waitNodeType)\n- **WaitForPeriod** (既定): period 必須。'30:00:00' のような期間文字列 (HH:MM:SS。24h 超え可) または '=' 始まりの式\n- **WaitForCondition**: condition (式) 必須\n- **WaitForEvent**: event (Event 名) 必須\n\n## 必須\n- processName / stepName\n- サブタイプに応じた period / condition / event のいずれか\n\n## 任意\n- waitNodeType (省略時 WaitForPeriod)\n- customizedTimeOut: タイムアウト経路 (TimedOutNodes) を有効化\n- comment\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        processName: { type: "string" },
+        stepName: { type: "string" },
+        waitNodeType: { type: "string", enum: ["WaitForPeriod", "WaitForCondition", "WaitForEvent"] },
+        period: { type: "string", description: "WaitForPeriod 用。'30:00:00' のような期間 or '=' 式" },
+        condition: { type: "string", description: "WaitForCondition 用。式 ('=' 自動付与)" },
+        event: { type: "string", description: "WaitForEvent 用。Event 名" },
+        customizedTimeOut: { type: "boolean" },
+        comment: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["processName", "stepName"],
+    },
+  },
+  {
     name: "appsheet_set_bot_trigger",
     description:
       "既存 Bot の Trigger (AppEvent) を編集する。eventType の切替 (DataChange ↔ Scheduled)、ChangeEvent 種別変更、cron / timeZone 編集、filterCondition 編集、bot.Disabled の切替に対応。\n\n## 必須\n- botName: 編集対象 Bot 名\n\n## 任意 (どれか 1 つ以上)\n- eventType: 'ADDS_ONLY' / 'UPDATES_ONLY' / 'DELETES_ONLY' / 'ADDS_AND_UPDATES' / 'ADDS_UPDATES_DELETES' / 'Scheduled'\n- filterCondition: 条件式 ('=' 自動付与)。空文字は変更なし扱い\n- tableName: Schedule の Table or DataChange の SchemaName 解決対象\n- scheduleConfig: { cron, timeZone, forEachRowInTable, region } の部分更新\n- disabled: Bot 有効/無効\n\n## 切替時のルール\n- DataChange → Scheduled: scheduleConfig.cron が必須\n- Scheduled → DataChange: eventType (ADDS_ONLY 等) が必須\n\nデフォルト dry-run。",
@@ -1525,6 +1599,12 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addBranchStep(args as Parameters<typeof addBranchStep>[0]);
     case "appsheet_add_data_action_step":
       return addDataActionStep(args as Parameters<typeof addDataActionStep>[0]);
+    case "appsheet_add_call_process_step":
+      return addCallProcessStep(args as Parameters<typeof addCallProcessStep>[0]);
+    case "appsheet_add_return_step":
+      return addReturnStep(args as Parameters<typeof addReturnStep>[0]);
+    case "appsheet_add_wait_step":
+      return addWaitStep(args as Parameters<typeof addWaitStep>[0]);
     case "appsheet_remove_step":
       return removeStep(args as Parameters<typeof removeStep>[0]);
     case "appsheet_move_step":
