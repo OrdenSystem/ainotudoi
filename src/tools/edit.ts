@@ -6207,7 +6207,8 @@ type UiActionType =
   | "openFile"
   | "exportView"
   | "copyEdit"
-  | "navigateDifferentApp";
+  | "navigateDifferentApp"
+  | "importFile";
 
 const UI_ACTION_TYPE_MAP: Record<UiActionType, { actionType: string; defType: string; defaultProminence: string; modifiesData: boolean }> = {
   linkToView:           { actionType: "NAVIGATE_APP",            defType: "Jeenee.DataTypes.DataActionNavigateApp, Jeenee.DataTypes",   defaultProminence: "Display_Inline",       modifiesData: false },
@@ -6218,6 +6219,7 @@ const UI_ACTION_TYPE_MAP: Record<UiActionType, { actionType: string; defType: st
   exportView:           { actionType: "EXPORT_VIEW",             defType: "Jeenee.DataTypes.DataActionExportView, Jeenee.DataTypes",   defaultProminence: "Display_Overlay",      modifiesData: false },
   copyEdit:             { actionType: "COPY_EDIT_ROW",           defType: "Jeenee.DataTypes.DataActionCopyRow, Jeenee.DataTypes",      defaultProminence: "Display_Prominently",  modifiesData: true },
   navigateDifferentApp: { actionType: "NAVIGATE_DIFFERENT_APP",  defType: "Jeenee.DataTypes.DataActionNavigateApp, Jeenee.DataTypes",  defaultProminence: "Display_Prominently",  modifiesData: false },
+  importFile:           { actionType: "IMPORT_FILE",             defType: "Jeenee.DataTypes.DataActionImportFile, Jeenee.DataTypes",   defaultProminence: "Do_Not_Display",       modifiesData: true },
 };
 
 interface UiActionCommonArgs {
@@ -6369,11 +6371,16 @@ async function _addUiActionCore(
   };
 }
 
-/** LINKTOVIEW / LINKTOROW / LINKTOFILTEREDVIEW の式を構築 */
-function buildLinkToViewExpr(args: { targetView?: string; targetRow?: string; navigateTarget?: string }): string {
+/** LINKTOVIEW / LINKTOROW / LINKTOFILTEREDVIEW / カスタム の式を構築 */
+function buildLinkToViewExpr(args: { targetView?: string; targetRow?: string; filterExpr?: string; navigateTarget?: string }): string {
   if (args.navigateTarget) return normalizeFormula(args.navigateTarget);
   if (!args.targetView) throw new Error("targetView か navigateTarget のいずれか必須");
-  // 同時指定なら LINKTOROW
+  // filterExpr 指定時 → LINKTOFILTEREDVIEW(view, filter)
+  if (args.filterExpr) {
+    const filter = args.filterExpr.startsWith("=") ? args.filterExpr.slice(1) : args.filterExpr;
+    return `=LINKTOFILTEREDVIEW("${args.targetView}", ${filter})`;
+  }
+  // targetRow 指定時 → LINKTOROW
   if (args.targetRow) {
     const row = args.targetRow.startsWith("[") || args.targetRow.startsWith("=") ? args.targetRow.replace(/^=/, "") : `[${args.targetRow}]`;
     return `=LINKTOROW(${row}, "${args.targetView}")`;
@@ -6383,11 +6390,17 @@ function buildLinkToViewExpr(args: { targetView?: string; targetRow?: string; na
 
 // ===== addLinkToViewAction =====
 export async function addLinkToViewAction(args: UiActionCommonArgs & {
-  targetView?: string;       // 対象 View 名 (LINKTOVIEW / LINKTOROW 用)
+  targetView?: string;       // 対象 View 名 (LINKTOVIEW / LINKTOROW / LINKTOFILTEREDVIEW 用)
   targetRow?: string;        // 行参照式 (LINKTOROW 用、例: "[ParentID]" or "ParentID")
-  navigateTarget?: string;   // 任意の式を直接指定 (上記 2 を使わない場合)
+  filterExpr?: string;       // フィルタ式 (LINKTOFILTEREDVIEW 用、例: '[Status] = "Active"')
+  navigateTarget?: string;   // 任意の式を直接指定 (上記 3 を使わない場合)
 }): Promise<UiActionResult> {
-  const expr = buildLinkToViewExpr({ targetView: args.targetView, targetRow: args.targetRow, navigateTarget: args.navigateTarget });
+  const expr = buildLinkToViewExpr({
+    targetView: args.targetView,
+    targetRow: args.targetRow,
+    filterExpr: args.filterExpr,
+    navigateTarget: args.navigateTarget,
+  });
   return _addUiActionCore("linkToView", args, { NavigateTarget: expr });
 }
 
@@ -6452,6 +6465,27 @@ export async function addNavigateDifferentAppAction(args: UiActionCommonArgs & {
   if (!args.targetAppName) throw new Error("targetAppName は必須 (例: '助成金アプリ-10612252')");
   return _addUiActionCore("navigateDifferentApp", args, {
     NavigateTarget: `=LINKTOAPP("${args.targetAppName}")`,
+  });
+}
+
+// ===== addImportFileAction =====
+export async function addImportFileAction(args: UiActionCommonArgs & {
+  referencedTable?: string;  // インポート先テーブル (省略時 null = self table)
+  csvLocale?: string;        // 既定 "ja-JP"
+}): Promise<UiActionResult> {
+  // referencedTable が指定されていれば DataSets で検証
+  if (args.referencedTable) {
+    const credential = resolveCredential(args.appId);
+    const appName = await lookupAppName(credential.appId, args.appName);
+    const { app } = await fetchLoadApp(appName);
+    const dataSets = (((app as Record<string, unknown>).AppData as Record<string, unknown>)?.DataSets as Array<Record<string, unknown>> | undefined) ?? [];
+    if (!dataSets.find((d) => d.Name === args.referencedTable)) {
+      throw new Error(`referencedTable '${args.referencedTable}' が見つかりません`);
+    }
+  }
+  return _addUiActionCore("importFile", args, {
+    CsvLocale: args.csvLocale ?? "ja-JP",
+    ReferencedTable: args.referencedTable ?? null,
   });
 }
 

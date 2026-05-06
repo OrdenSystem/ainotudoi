@@ -96,6 +96,7 @@ import {
   addExportViewAction,
   addCopyEditAction,
   addNavigateDifferentAppAction,
+  addImportFileAction,
   removeStep,
   moveStep,
   setBotTrigger,
@@ -1021,7 +1022,7 @@ const tools: Tool[] = [
   {
     name: "appsheet_add_link_to_view_action",
     description:
-      "テーブルに LinkToView (NAVIGATE_APP) Action を追加する。本番アプリで最頻出 Action タイプ (約 24%)。\n\n## 用途\n- View Ref: ターゲット view の特定行を開く (`=LINKTOROW([id], \"View\")`)\n- View nav: ターゲット view 自体を開く (`=LINKTOVIEW(\"View\")`)\n- カスタム式: `navigateTarget` で任意の式を直接指定\n\n## 必須\n- tableName / actionName\n- targetView または navigateTarget のいずれか\n\n## 任意\n- targetRow: LINKTOROW 用の行参照 (例: '[ParentID]' or 'ParentID')\n- prominence (既定 Display_Inline) / condition / needsConfirmation / icon\n\nデフォルト dry-run。",
+      "テーブルに LinkToView (NAVIGATE_APP) Action を追加する。本番アプリで最頻出 Action タイプ (約 24%)。\n\n## 用途\n- View Ref: ターゲット view の特定行を開く (`=LINKTOROW([id], \"View\")`)\n- View nav: ターゲット view 自体を開く (`=LINKTOVIEW(\"View\")`)\n- Filtered view: 条件付きで view を開く (`=LINKTOFILTEREDVIEW(\"View\", filter)`)\n- カスタム式: `navigateTarget` で任意の式を直接指定\n\n## 必須\n- tableName / actionName\n- targetView または navigateTarget のいずれか\n\n## 任意\n- targetRow: LINKTOROW 用の行参照 (例: '[ParentID]' or 'ParentID')\n- filterExpr: LINKTOFILTEREDVIEW 用のフィルタ式 (例: '[Status] = \"Active\"')\n- prominence (既定 Display_Inline) / condition / needsConfirmation / icon\n\n## 優先順位\nnavigateTarget > filterExpr > targetRow > targetView (LINKTOVIEW 単独)\n\nデフォルト dry-run。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1030,7 +1031,8 @@ const tools: Tool[] = [
         actionName: { type: "string" },
         targetView: { type: "string", description: "対象 View 名" },
         targetRow: { type: "string", description: "LINKTOROW 用の行参照式 (省略時 LINKTOVIEW)" },
-        navigateTarget: { type: "string", description: "任意の式を直接指定 (targetView/targetRow より優先)" },
+        filterExpr: { type: "string", description: "LINKTOFILTEREDVIEW 用のフィルタ式 (例: '[Status] = \"Active\"')" },
+        navigateTarget: { type: "string", description: "任意の式を直接指定 (上記より優先)" },
         condition: { type: "string" },
         prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
         needsConfirmation: { type: "boolean" },
@@ -1172,6 +1174,26 @@ const tools: Tool[] = [
         apply: { type: "boolean" },
       },
       required: ["tableName", "actionName", "targetAppName"],
+    },
+  },
+  {
+    name: "appsheet_add_import_file_action",
+    description:
+      "テーブルに CSV インポート (IMPORT_FILE) Action を追加する。CSV ファイル選択ダイアログを開いて指定テーブルへ一括取込。\n\n## 必須\n- tableName / actionName\n\n## 任意\n- referencedTable: インポート先テーブル (省略時 tableName 自身)\n- csvLocale: 既定 'ja-JP'\n- prominence: 既定 Do_Not_Display (Editor から呼ぶ運用)\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        tableName: { type: "string" }, actionName: { type: "string" },
+        referencedTable: { type: "string", description: "インポート先テーブル (省略時 self)" },
+        csvLocale: { type: "string" },
+        condition: { type: "string" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" }, icon: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName"],
     },
   },
   {
@@ -1785,6 +1807,8 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addCopyEditAction(args as unknown as Parameters<typeof addCopyEditAction>[0]);
     case "appsheet_add_navigate_different_app_action":
       return addNavigateDifferentAppAction(args as unknown as Parameters<typeof addNavigateDifferentAppAction>[0]);
+    case "appsheet_add_import_file_action":
+      return addImportFileAction(args as unknown as Parameters<typeof addImportFileAction>[0]);
     case "appsheet_remove_step":
       return removeStep(args as Parameters<typeof removeStep>[0]);
     case "appsheet_move_step":
