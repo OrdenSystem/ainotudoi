@@ -103,8 +103,56 @@ import {
   setBotOptions,
 } from "./tools/edit.js";
 import { refreshCookie as playwrightRefreshCookie } from "./auth/playwright.js";
+import { preflight, runCookieInit } from "./tools/preflight.js";
 
 const tools: Tool[] = [
+  {
+    name: "appsheet_preflight",
+    description:
+      "**会話の最初に必ず呼ぶ事前チェックツール**（副作用なし）。\n\n" +
+      "AppID / Access Key / Cookie / snapshot / API 到達 を一括確認し、未充足項目と次手順を返す。\n" +
+      "返り値の `nextSteps` を 1 つずつ**クローズドクエッション（Y/N）**でユーザーに確認しながら進めること。\n" +
+      "`conversationGuide` フィールドには **新規作成はオープン質問 / 編集・データ操作はクローズド質問** という会話パラダイムが書かれているので、必ず読んでから後続ツールを呼ぶ。\n\n" +
+      "## 何を確認するか\n" +
+      "- AppSheet App ID（.env の APPSHEET_DEFAULT_APP_ID または引数）\n" +
+      "- Application Access Key（APPSHEET_ACCESS_KEY__<AppId>）\n" +
+      "- AppSheet 開発者（co-author）招待の有無（技術的に検出不能のためユーザーに確認させる）\n" +
+      "- 内部 App Name（Editor URL の末尾セグメント）\n" +
+      "- APPSHEET_COOKIE と Cookie 鮮度（playwright-userdata の更新時刻ベース）\n" +
+      "- snapshots/openapi-<appId>.json と snapshots/appdef-<appId>.json の存在\n" +
+      "- Application API v2 への到達（軽量プローブ）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string", description: "対象 App ID（省略時は .env 既定）" },
+        appName: { type: "string", description: "内部 App Name（既知なら指定）。省略時は appdef snapshot から自動検出" },
+        skipApiProbe: { type: "boolean", description: "true で API 到達確認をスキップ（オフライン時）" },
+      },
+    },
+  },
+  {
+    name: "appsheet_run_cookie_init",
+    description:
+      "**初回 Cookie 取得を MCP 経由で起動**（headed Chromium）。`npm run cookie:init` を CLI で叩く代わり。\n\n" +
+      "## 重要: 必ず 2 段階で呼ぶこと\n" +
+      "1. **1 回目（同意確認）**: `userConsent` を**指定しない**で呼ぶ → ツールは `consentPrompt` を返す → その内容をそのままユーザーに見せて Y/N を取る\n" +
+      "2. **2 回目（実行）**: ユーザーが Y と答えたら `userConsent: true` で再実行 → headed Chromium が開いてログイン → Cookie が `.env` に書込まれる\n\n" +
+      "`userConsent: true` を最初から付けて呼ぶのは禁止（ユーザーがブラウザ起動を予期していない可能性があるため）。\n\n" +
+      "## 既に playwright-userdata/ にセッションがある場合\n" +
+      "`appsheet_refresh_cookie`（headless）で済むケースが多い。preflight の結果を見て分岐すること。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        userConsent: {
+          type: "boolean",
+          description: "ユーザーから Y を取った後にのみ true。未指定 / false なら同意プロンプトを返すだけで実行しない。",
+        },
+        account: { type: "string", description: "Google アカウント直指定（authuser パラメータ）" },
+        preferHeadless: { type: "boolean", description: "true で headless にフォールバック試行（既に有効セッションがある場合のみ成功）" },
+        waitForLoginSeconds: { type: "number", description: "ログイン完了待機の最大秒数（default 300）" },
+      },
+    },
+  },
   {
     name: "appsheet_find_records",
     description:
@@ -133,7 +181,13 @@ const tools: Tool[] = [
   },
   {
     name: "appsheet_add_records",
-    description: "AppSheet API v2 の Add で複数行を追加する。",
+    description:
+      "AppSheet API v2 の Add で複数行を追加する。\n\n" +
+      "## 呼ぶ前のチェックリスト\n" +
+      "- `tableName` が AppSheet 上の正確なテーブル名と一致しているか（推測しない）\n" +
+      "- 不確実なら **先に `appsheet_get_tables` で候補一覧を取り、ユーザーに番号で選ばせる**\n" +
+      "- `rows` の各オブジェクトのキー名が実列名と一致しているか（必要なら `appsheet_get_columns`）\n" +
+      "- 追加後の影響範囲（自動 Bot 起動・連動 Action）をユーザーに口頭で要約してから実行",
     inputSchema: {
       type: "object",
       properties: {
@@ -146,7 +200,17 @@ const tools: Tool[] = [
   },
   {
     name: "appsheet_edit_records",
-    description: "AppSheet API v2 の Edit で既存行を更新する。各行はキー列を含む必要がある。",
+    description:
+      "AppSheet API v2 の Edit で既存行を更新する。各行はキー列を含む必要がある。\n\n" +
+      "## 事故防止: クローズドクエッションで進めること\n" +
+      "1. 編集対象の行をまず `appsheet_find_records` で取得してユーザーに見せる\n" +
+      "2. 「この行のこの列をこの値に変更します。よろしいですか？（Y/N）」で明示同意を取る\n" +
+      "3. 同意後にこのツールで実行\n\n" +
+      "## 呼ぶ前のチェックリスト\n" +
+      "- `tableName` が AppSheet 上の正確なテーブル名と一致しているか\n" +
+      "- 不確実なら **先に `appsheet_get_tables` で候補一覧を取り、ユーザーに番号で選ばせる**\n" +
+      "- `rows` の各オブジェクトに**キー列**が含まれているか（無いと AppSheet は黙って 0 件を返す）\n" +
+      "- 列名が曖昧なら `appsheet_get_columns` で候補列挙",
     inputSchema: {
       type: "object",
       properties: {
@@ -159,7 +223,16 @@ const tools: Tool[] = [
   },
   {
     name: "appsheet_delete_records",
-    description: "AppSheet API v2 の Delete で行を削除する。各行はキー列のみで OK。",
+    description:
+      "AppSheet API v2 の Delete で行を削除する。各行はキー列のみで OK。\n\n" +
+      "## ⚠ 削除は復元できません。必ずクローズド確認を 2 段階で\n" +
+      "1. 削除対象の行を `appsheet_find_records` で取得してユーザーに**全件見せる**\n" +
+      "2. 「これら N 件を削除します。元に戻せません。本当に実行してよろしいですか？（Y/N）」で明示同意\n" +
+      "3. 同意後にこのツールで実行\n\n" +
+      "## 呼ぶ前のチェックリスト\n" +
+      "- 子レコード（is-a-part-of）の連鎖削除が走る可能性を**事前にユーザーに伝えたか**\n" +
+      "- 削除を契機に発火する Bot が無いか（`appsheet_get_bots` で確認）\n" +
+      "- `tableName` が曖昧なら推測せず `appsheet_get_tables` で候補列挙",
     inputSchema: {
       type: "object",
       properties: {
@@ -172,7 +245,12 @@ const tools: Tool[] = [
   },
   {
     name: "appsheet_invoke_action",
-    description: "AppSheet で定義された任意のアクションを実行する。",
+    description:
+      "AppSheet で定義された任意のアクションを実行する。\n\n" +
+      "## 呼ぶ前のチェックリスト\n" +
+      "- `actionName` が曖昧なら必ず `appsheet_get_actions` で候補一覧を取得し、ユーザーに番号で選ばせる\n" +
+      "- 対象 Action が**何を変更するか**（更新先列・式・連動 Bot）を `appsheet_get_action_detail` で確認\n" +
+      "- 影響を口頭で要約してユーザーに「実行します。よろしいですか？（Y/N）」",
     inputSchema: {
       type: "object",
       properties: {
@@ -1680,6 +1758,10 @@ type ToolArgs = Record<string, unknown>;
 
 async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
   switch (name) {
+    case "appsheet_preflight":
+      return preflight(args as Parameters<typeof preflight>[0]);
+    case "appsheet_run_cookie_init":
+      return runCookieInit(args as Parameters<typeof runCookieInit>[0]);
     case "appsheet_find_records":
       return findRecords(args as Parameters<typeof findRecords>[0]);
     case "appsheet_add_records":
@@ -1847,7 +1929,7 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
 async function main(): Promise<void> {
   const server = new Server(
     { name: "appsheet-mcp", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: { listChanged: true } } },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
