@@ -25,6 +25,19 @@ cp .env.example .env
 npm run build
 ```
 
+### Claude Code で初めて使う時のオンボーディング
+
+`.env` の編集が終わったら、Claude Code に **`appsheet_preflight`** を呼んでもらってください。AppID / Access Key / Cookie / snapshot / API 到達を一括チェックして、足りない項目と次の手順を返します。
+
+会話例：
+
+> ユーザー: AppSheet を繋ぎたい
+>
+> Claude: では `appsheet_preflight` を呼びます… 結果、Access Key と Cookie が未設定です。順に確認させてください。
+>   1. Application Access Key は発行済みですか？（Y/N）…
+
+`.claude/agents/appsheet-onboarding.md` というサブエージェントが**クローズドクエッション中心**で誘導するように仕込まれており、PROACTIVELY 起動するように設計されています。書込み許可・Cookie 取得許可・開発者招待確認まで対話で完結します。
+
 `npm run setup` は [`affaan-m/everything-claude-code`](https://github.com/affaan-m/everything-claude-code) を `~/.claude/everything-claude-code/` に同期します（既存なら `git pull --rebase --autostash`、無ければ `git clone --depth=1`）。これで Claude Code から AppsheetMCP のサブエージェント（`.claude/agents/appsheet-*`）と ECG のエージェント・スキル・コマンドの両方が利用可能になります。Claude Code 再起動後に有効化されます。
 
 ### `.env` の書き方
@@ -47,19 +60,64 @@ APPSHEET_ACCESS_KEY__<App ID>=V2-xxxxx-xxxxx
 
 プロジェクトルートの `.mcp.json` に登録するか、ユーザースコープでも可。
 
+### パターン A: 同じプロジェクト配下に clone した場合
+
 ```json
 {
   "mcpServers": {
     "appsheet": {
       "command": "node",
       "args": ["./appsheet-mcp/dist/index.js"],
-      "cwd": "."
+      "cwd": "./appsheet-mcp"
     }
   }
 }
 ```
 
+### パターン B: 他リポジトリ（別プロジェクト）から参照する場合
+
+このリポジトリは「複数プロジェクトで共用する横断ツール」として設計されているため、利用する側のプロジェクトとは別の場所に clone するケースが一般的。その場合は **絶対パス参照** にする。
+
+```json
+{
+  "mcpServers": {
+    "appsheet": {
+      "command": "node",
+      "args": ["C:/work/appsheet-mcp/dist/index.js"],
+      "cwd": "C:/work/appsheet-mcp"
+    }
+  }
+}
+```
+
+**Windows + Google Drive で運用する場合の注意**: Drive 配下（`G:\` や `J:\`）に clone すると `npm install` が EBADF/EPERM で失敗します。symlink/junction も Drive の仮想ボリューム上では張れないため、**実体は `C:\work\appsheet-mcp\` 等のローカルディスクに配置**し、参照側プロジェクトの `.mcp.json` から絶対パスで指す運用が安全です。
+
+### パターン C: チームで共有する場合（環境変数化）
+
+メンバーごとに clone 先が異なる場合は、`${VAR}` で環境変数を展開できます（Claude Code 公式仕様）。
+
+```json
+{
+  "mcpServers": {
+    "appsheet": {
+      "command": "node",
+      "args": ["${APPSHEET_MCP_DIR}/dist/index.js"],
+      "cwd": "${APPSHEET_MCP_DIR}"
+    }
+  }
+}
+```
+
+各メンバーは OS の環境変数に `APPSHEET_MCP_DIR=C:\work\appsheet-mcp`（自分の clone 先）を設定。Windows なら `setx APPSHEET_MCP_DIR "C:\work\appsheet-mcp"`、macOS/Linux なら `~/.zshrc` 等に `export APPSHEET_MCP_DIR=...` を追記。
+
 ## 提供ツール
+
+### Phase 0（オンボーディング・事前チェック）
+
+| ツール | 概要 |
+|--------|------|
+| `appsheet_preflight` | **会話の最初に必ず呼ぶ**。AppID/Key/Cookie/snapshot/API 到達を一括チェックし、未充足項目と次手順を返す（副作用なし） |
+| `appsheet_run_cookie_init` | 初回 Cookie 取得を MCP 経由で起動。**`userConsent: true` 必須**。1 回目は `consentPrompt` 返却で確認、2 回目で実行（headed Chromium が開く） |
 
 ### Phase 1（データ CRUD・公式 API v2 経由・安定）
 
@@ -232,6 +290,34 @@ npm run build
 node dist/index.js
 # stdin から MCP プロトコルでメッセージを流すか、Claude Code から呼ぶ
 ```
+
+## 会話パラダイム（Claude Code との対話設計）
+
+このリポジトリは Claude Code との対話で**事故が起きにくいパターン**を仕込んであります（[CLAUDE.md](CLAUDE.md) と各サブエージェント参照）。
+
+| シーン | 質問スタイル | 担当エージェント |
+|--------|-------------|----------------|
+| 新規開発・新規アプリ・新規テーブル設計 | **オープンクエッション**（要件をヒアリングで広げる） | `appsheet-architect` |
+| 既存アプリの編集・式書換・列追加 | **クローズドクエッション**（候補から番号で選ばせる、dry-run → 承認 → apply） | `appsheet-builder` |
+| 動作不良・エラーの調査 | クローズド寄り（仮説検証） | `appsheet-debugger` |
+| 既存アプリの構造レビュー | クローズド寄り（観点を絞って報告） | `appsheet-reviewer` |
+| 新規環境セットアップ | **クローズド中心**（preflight 駆動） | `appsheet-onboarding` |
+
+書込み系ツールはすべて **デフォルト dry-run** で、`apply: true` を付けるには **ユーザーから明示 Y を取ってから** 再実行する設計です。削除・テーブル丸ごと操作は影響範囲を口頭で要約してから確認を取ります。
+
+## Cursor / Claude Code リロードについて
+
+「リロードしてください」プロンプトが出やすいケースの内訳と対処：
+
+| 操作 | リロード必要？ | 理由 |
+|------|---------------|------|
+| `.env` 更新（Access Key / Cookie 追加） | **不要** | 各ツール呼出時に `process.env` を読むので即反映 |
+| Cookie 取得・`appsheet_refresh_cookie` 実行 | **不要** | 動的データ。MCP プロセス内で `process.env.APPSHEET_COOKIE` も更新される |
+| `snapshots/*.json` 更新 | **不要** | ツール実行時に読む |
+| MCP サーバーのコード更新（新ツール追加・description 変更） | **MCP 再起動のみ**（IDE 全体リロード不要） | 本サーバーは `tools.listChanged: true` を advertise しているので、MCP プロセス再起動後はクライアントが自動再取得 |
+| `.mcp.json` 自体の編集 | **必要** | クライアント設定の再読込 |
+
+つまり**日常運用でリロードを要求される場面はほぼありません**。Cursor が頻繁にリロードを促す場合は、`.mcp.json` のパスや環境変数展開の問題（毎回設定が変わって見えている）を疑ってください。
 
 ## ライセンス・利用上の注意
 
