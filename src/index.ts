@@ -88,6 +88,15 @@ import {
   addCallProcessStep,
   addReturnStep,
   addWaitStep,
+  addLinkToViewAction,
+  addEmailAction,
+  addCallAction,
+  addSmsAction,
+  addOpenFileAction,
+  addExportViewAction,
+  addCopyEditAction,
+  addNavigateDifferentAppAction,
+  addImportFileAction,
   removeStep,
   moveStep,
   setBotTrigger,
@@ -1011,6 +1020,183 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "appsheet_add_link_to_view_action",
+    description:
+      "テーブルに LinkToView (NAVIGATE_APP) Action を追加する。本番アプリで最頻出 Action タイプ (約 24%)。\n\n## 用途\n- View Ref: ターゲット view の特定行を開く (`=LINKTOROW([id], \"View\")`)\n- View nav: ターゲット view 自体を開く (`=LINKTOVIEW(\"View\")`)\n- Filtered view: 条件付きで view を開く (`=LINKTOFILTEREDVIEW(\"View\", filter)`)\n- カスタム式: `navigateTarget` で任意の式を直接指定\n\n## 必須\n- tableName / actionName\n- targetView または navigateTarget のいずれか\n\n## 任意\n- targetRow: LINKTOROW 用の行参照 (例: '[ParentID]' or 'ParentID')\n- filterExpr: LINKTOFILTEREDVIEW 用のフィルタ式 (例: '[Status] = \"Active\"')\n- prominence (既定 Display_Inline) / condition / needsConfirmation / icon\n\n## 優先順位\nnavigateTarget > filterExpr > targetRow > targetView (LINKTOVIEW 単独)\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        tableName: { type: "string" },
+        actionName: { type: "string" },
+        targetView: { type: "string", description: "対象 View 名" },
+        targetRow: { type: "string", description: "LINKTOROW 用の行参照式 (省略時 LINKTOVIEW)" },
+        filterExpr: { type: "string", description: "LINKTOFILTEREDVIEW 用のフィルタ式 (例: '[Status] = \"Active\"')" },
+        navigateTarget: { type: "string", description: "任意の式を直接指定 (上記より優先)" },
+        condition: { type: "string" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" },
+        icon: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName"],
+    },
+  },
+  {
+    name: "appsheet_add_email_action",
+    description:
+      "テーブルに Compose Email (EMAIL) Action を追加する。Email 列のボタンとして表示され、ユーザのメールアプリを起動。\n\n## 必須\n- tableName / actionName / emailTo (列参照 '[Mail]' or 式)\n\n## 任意\n- subject / body / condition / prominence / needsConfirmation / icon\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        tableName: { type: "string" }, actionName: { type: "string" },
+        emailTo: { type: "string", description: "宛先列参照 (例: '[Mail]') or 式" },
+        subject: { type: "string" }, body: { type: "string" },
+        condition: { type: "string" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" }, icon: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName", "emailTo"],
+    },
+  },
+  {
+    name: "appsheet_add_call_action",
+    description:
+      "テーブルに Phone Call (CALL) Action を追加する。Phone 列のボタンとして表示され、デバイスの電話アプリを起動。\n\n## 必須\n- tableName / actionName / number (列参照 '[電話番号]')\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        tableName: { type: "string" }, actionName: { type: "string" },
+        number: { type: "string", description: "電話番号列参照 (例: '[電話番号]')" },
+        condition: { type: "string" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" }, icon: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName", "number"],
+    },
+  },
+  {
+    name: "appsheet_add_sms_action",
+    description:
+      "テーブルに Send SMS (SMS) Action を追加する。Phone 列のボタンとして表示され、デバイスの SMS アプリを起動 (本文 prefill 可)。\n\n## 必須\n- tableName / actionName / number\n\n## 任意\n- message: 本文プリフィル\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        tableName: { type: "string" }, actionName: { type: "string" },
+        number: { type: "string" }, message: { type: "string" },
+        condition: { type: "string" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" }, icon: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName", "number"],
+    },
+  },
+  {
+    name: "appsheet_add_open_file_action",
+    description:
+      "テーブルに Open File (OPEN_FILE) Action を追加する。ファイル列 (PDF/画像等) のボタンとして表示され、ファイルを開く。\n\n## 必須\n- tableName / actionName / fileTarget (列参照 '[請求書PDF]')\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        tableName: { type: "string" }, actionName: { type: "string" },
+        fileTarget: { type: "string", description: "ファイル列参照 (例: '[請求書PDF]')" },
+        condition: { type: "string" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" }, icon: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName", "fileTarget"],
+    },
+  },
+  {
+    name: "appsheet_add_export_view_action",
+    description:
+      "テーブルに Export this view to a CSV file (EXPORT_VIEW) Action を追加する。view の現在の中身を CSV ダウンロード。\n\n## 必須\n- tableName / actionName\n\n## 任意\n- csvLocale (既定 'ja-JP')\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        tableName: { type: "string" }, actionName: { type: "string" },
+        csvLocale: { type: "string", description: "CSV ロケール (既定 'ja-JP')" },
+        condition: { type: "string" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" }, icon: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName"],
+    },
+  },
+  {
+    name: "appsheet_add_copy_edit_action",
+    description:
+      "テーブルに Copy this row & Edit (COPY_EDIT_ROW) Action を追加する。現在行を複製して編集 form を開く (新規行作成のショートカット)。\n\n## 必須\n- tableName / actionName\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        tableName: { type: "string" }, actionName: { type: "string" },
+        condition: { type: "string" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" }, icon: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName"],
+    },
+  },
+  {
+    name: "appsheet_add_navigate_different_app_action",
+    description:
+      "別 AppSheet アプリに遷移する Action (NAVIGATE_DIFFERENT_APP) を追加する。\n\n## 必須\n- tableName / actionName / targetAppName (内部名、例: '助成金アプリ-10612252')\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        tableName: { type: "string" }, actionName: { type: "string" },
+        targetAppName: { type: "string", description: "対象アプリの内部名 (例: '助成金アプリ-10612252')" },
+        condition: { type: "string" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" }, icon: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName", "targetAppName"],
+    },
+  },
+  {
+    name: "appsheet_add_import_file_action",
+    description:
+      "テーブルに CSV インポート (IMPORT_FILE) Action を追加する。CSV ファイル選択ダイアログを開いて指定テーブルへ一括取込。\n\n## 必須\n- tableName / actionName\n\n## 任意\n- referencedTable: インポート先テーブル (省略時 tableName 自身)\n- csvLocale: 既定 'ja-JP'\n- prominence: 既定 Do_Not_Display (Editor から呼ぶ運用)\n\nデフォルト dry-run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string" }, appName: { type: "string" },
+        tableName: { type: "string" }, actionName: { type: "string" },
+        referencedTable: { type: "string", description: "インポート先テーブル (省略時 self)" },
+        csvLocale: { type: "string" },
+        condition: { type: "string" },
+        prominence: { type: "string", enum: ["Display_Prominently", "Display_Overlay", "Display_Inline", "Do_Not_Display"] },
+        needsConfirmation: { type: "boolean" },
+        confirmationMessage: { type: "string" }, icon: { type: "string" },
+        apply: { type: "boolean" },
+      },
+      required: ["tableName", "actionName"],
+    },
+  },
+  {
     name: "appsheet_set_bot_trigger",
     description:
       "既存 Bot の Trigger (AppEvent) を編集する。eventType の切替 (DataChange ↔ Scheduled)、ChangeEvent 種別変更、cron / timeZone 編集、filterCondition 編集、bot.Disabled の切替に対応。\n\n## 必須\n- botName: 編集対象 Bot 名\n\n## 任意 (どれか 1 つ以上)\n- eventType: 'ADDS_ONLY' / 'UPDATES_ONLY' / 'DELETES_ONLY' / 'ADDS_AND_UPDATES' / 'ADDS_UPDATES_DELETES' / 'Scheduled'\n- filterCondition: 条件式 ('=' 自動付与)。空文字は変更なし扱い\n- tableName: Schedule の Table or DataChange の SchemaName 解決対象\n- scheduleConfig: { cron, timeZone, forEachRowInTable, region } の部分更新\n- disabled: Bot 有効/無効\n\n## 切替時のルール\n- DataChange → Scheduled: scheduleConfig.cron が必須\n- Scheduled → DataChange: eventType (ADDS_ONLY 等) が必須\n\nデフォルト dry-run。",
@@ -1605,6 +1791,24 @@ async function dispatch(name: string, args: ToolArgs): Promise<unknown> {
       return addReturnStep(args as Parameters<typeof addReturnStep>[0]);
     case "appsheet_add_wait_step":
       return addWaitStep(args as Parameters<typeof addWaitStep>[0]);
+    case "appsheet_add_link_to_view_action":
+      return addLinkToViewAction(args as unknown as Parameters<typeof addLinkToViewAction>[0]);
+    case "appsheet_add_email_action":
+      return addEmailAction(args as unknown as Parameters<typeof addEmailAction>[0]);
+    case "appsheet_add_call_action":
+      return addCallAction(args as unknown as Parameters<typeof addCallAction>[0]);
+    case "appsheet_add_sms_action":
+      return addSmsAction(args as unknown as Parameters<typeof addSmsAction>[0]);
+    case "appsheet_add_open_file_action":
+      return addOpenFileAction(args as unknown as Parameters<typeof addOpenFileAction>[0]);
+    case "appsheet_add_export_view_action":
+      return addExportViewAction(args as unknown as Parameters<typeof addExportViewAction>[0]);
+    case "appsheet_add_copy_edit_action":
+      return addCopyEditAction(args as unknown as Parameters<typeof addCopyEditAction>[0]);
+    case "appsheet_add_navigate_different_app_action":
+      return addNavigateDifferentAppAction(args as unknown as Parameters<typeof addNavigateDifferentAppAction>[0]);
+    case "appsheet_add_import_file_action":
+      return addImportFileAction(args as unknown as Parameters<typeof addImportFileAction>[0]);
     case "appsheet_remove_step":
       return removeStep(args as Parameters<typeof removeStep>[0]);
     case "appsheet_move_step":
