@@ -83,6 +83,35 @@ function getHistoryPresets(targetId) {
   } catch (e) { return { presets: [] }; }
 }
 
+// 基本セット（全体共通）の保存キー
+const DEFAULT_PRESETS_KEY_ = "DEFAULT_PRESETS";
+
+// 基本セットを保存（全ユーザー共通。IDは不要）
+function saveDefaultPresets(presets) {
+  try {
+    if (!Array.isArray(presets)) throw new Error("presets は配列で送ってください");
+    PropertiesService.getScriptProperties()
+      .setProperty(DEFAULT_PRESETS_KEY_, JSON.stringify(presets));
+    // フロントは res.status と res.presets を見るため両方返す
+    return { status: "Success", presets: presets };
+  } catch (e) {
+    console.error("saveDefaultPresets Error: " + e.message);
+    try { notifyError("saveDefaultPresets", e.message); } catch (ne) {}
+    return { status: "Error", message: e.message };  // フロントは res.message を表示
+  }
+}
+
+// 基本セットを読み込み（無ければ空配列）
+function getDefaultPresets() {
+  try {
+    const raw = PropertiesService.getScriptProperties().getProperty(DEFAULT_PRESETS_KEY_);
+    return { presets: raw ? JSON.parse(raw) : [] };
+  } catch (e) {
+    console.error("getDefaultPresets Error: " + e.message);
+    return { presets: [] };
+  }
+}
+
 // 3. メインチャット処理 (履歴を知識として結合)
 function processUserMessage(userId, userMessage, fileData, useContext, frontendHistory) {
   try {
@@ -731,61 +760,4 @@ function testRegisterCaseRecordDispatcher() {
     null
   );
   Logger.log("書き込み結果: " + JSON.stringify(result));
-}
-
-// =================================================================================
-// 基本セット（デフォルトプロンプト）管理 — 全職員共通
-// Script Properties に DEFAULT_PRESETS を JSON 配列で保存
-// =================================================================================
-const DEFAULT_PRESETS_KEY = "DEFAULT_PRESETS";
-const DEFAULT_PRESETS_FALLBACK = [
-  "# 200文字以内で回答",
-  "# SOAP形式で出力",
-  "# 箇条書きで要点を3つほど回答",
-  "# 挨拶なしで回答のみ出力"
-];
-const DEFAULT_PRESETS_MAX_COUNT = 50;
-const DEFAULT_PRESETS_MAX_LEN = 500;
-
-function getDefaultPresets() {
-  try {
-    const stored = PropertiesService.getScriptProperties().getProperty(DEFAULT_PRESETS_KEY);
-    if (!stored) return { presets: DEFAULT_PRESETS_FALLBACK.slice() };
-    const arr = JSON.parse(stored);
-    if (!Array.isArray(arr)) return { presets: DEFAULT_PRESETS_FALLBACK.slice() };
-    return { presets: arr };
-  } catch (e) {
-    console.error("getDefaultPresets エラー: " + e.message);
-    return { presets: DEFAULT_PRESETS_FALLBACK.slice() };
-  }
-}
-
-function saveDefaultPresets(presets) {
-  try {
-    if (!Array.isArray(presets)) {
-      return { status: "Error", message: "presets は配列である必要があります" };
-    }
-    if (presets.length > DEFAULT_PRESETS_MAX_COUNT) {
-      return { status: "Error", message: "プリセットは最大 " + DEFAULT_PRESETS_MAX_COUNT + " 個までです" };
-    }
-    const cleaned = [];
-    for (let i = 0; i < presets.length; i++) {
-      const v = presets[i];
-      if (typeof v !== "string") {
-        return { status: "Error", message: "プリセットは文字列である必要があります (index=" + i + ")" };
-      }
-      const trimmed = v.trim();
-      if (!trimmed) continue;
-      if (trimmed.length > DEFAULT_PRESETS_MAX_LEN) {
-        return { status: "Error", message: "プリセットは " + DEFAULT_PRESETS_MAX_LEN + " 文字以内です (index=" + i + ")" };
-      }
-      cleaned.push(trimmed);
-    }
-    PropertiesService.getScriptProperties().setProperty(DEFAULT_PRESETS_KEY, JSON.stringify(cleaned));
-    return { status: "Success", presets: cleaned };
-  } catch (e) {
-    console.error("saveDefaultPresets エラー: " + e.message);
-    try { notifyError("saveDefaultPresets", e.message); } catch (ne) {}
-    return { status: "Error", message: e.message };
-  }
 }

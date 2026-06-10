@@ -62,14 +62,14 @@ function doPost(e) {
         requestData.consultId
       );
     }
-    else if (action === "getDefaultPresets") {
-      result = getDefaultPresets();
+    else if (action === "ping") {
+      result = { status: "ok" };
     }
     else if (action === "saveDefaultPresets") {
       result = saveDefaultPresets(requestData.presets);
     }
-    else if (action === "ping") {
-      result = { status: "ok" };
+    else if (action === "getDefaultPresets") {
+      result = getDefaultPresets();
     }
     else {
       console.warn("未知のアクション:", action);

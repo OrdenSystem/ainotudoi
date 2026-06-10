@@ -11,7 +11,7 @@ function sendSlackNotification(message) {
   }
 
   const payload = {
-    text: message + "HopeAIchat_とよさと様",
+    text: message + "HopeAIchat_あいのつどい様",
     channel: "slack通知"
   };
 
