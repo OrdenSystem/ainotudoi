@@ -472,7 +472,7 @@
     };
 
     // ★重要: あなたのGASのWebアプリURLを設定してください
-    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbz-kM_vJRoWNlzdlx6n_G8qlgBrKyhzf0qY8erT4T_LC3oefswexzWWoen2CXYnVC3V/exec";
+    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbyi_6je5Gnxu6HGJ0q4WtqwUK_FOunivIOTLULHE58JKz-syCQ3QeoyxHwCZRcZwsHdjw/exec";
 
     class UIManager {
       constructor() {
@@ -861,19 +861,20 @@
             const kw = tokenData.keywords.join(',');
             if (encodeURIComponent(kw).length < 1000) kwParam = '&keywords=' + encodeURIComponent(kw);
           }
-          const wsBase = 'wss://api.deepgram.com/v1/listen?language=ja&smart_format=true&punctuate=true&filler_words=false&interim_results=true&endpointing=300';
-          this.connectDeepgramWS(wsBase + '&model=nova-3' + kwParam, wsBase + '&model=nova-2' + kwParam);
+          const wsBase = 'wss://api.deepgram.com/v1/listen?language=ja&smart_format=true&punctuate=true&numerals=true&diarize=true&utterances=true&filler_words=false&profanity_filter=false&interim_results=true&endpointing=500';
+          // Nova-3はWebSocket未対応のため、Nova-2で接続（REST fallbackはNova-3）
+          this.connectDeepgramWS(wsBase + '&model=nova-2' + kwParam, null);
 
         } catch(e) { alert("マイクへのアクセスが拒否されました: " + e); }
       }
 
       connectDeepgramWS(primaryUrl, fallbackUrl) {
-        this.ui.log("WS接続中 (Nova-3)...");
+        this.ui.log("WS接続中 (Nova-2)...");
         this.deepgramSocket = new WebSocket(primaryUrl, ['token', this.deepgramToken]);
         let hasFallenBack = false;
 
         this.deepgramSocket.onopen = () => {
-          this.ui.log("WS接続完了 - Nova-3 リアルタイム開始");
+          this.ui.log("WS接続完了 - Nova-2 リアルタイム開始");
           this.startStreamingRecorder();
         };
 

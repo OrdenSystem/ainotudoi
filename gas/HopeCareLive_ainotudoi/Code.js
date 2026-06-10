@@ -195,7 +195,6 @@ function summarizeTextWithGemini(rawText, contextInfo, staffId) {
 
   const useProModel = rawText.length > 3500;
   const MODEL_NAME = useProModel ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-  const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${GEMINI_API_KEY}`;
 
   const prompt = `あなたは介護記録の作成支援AIです。
 以下の【対象テキスト】を分析し、**「客観的な事実記録」**と**「情意・温度感の補足」**の2つに分けて整理してください。
@@ -241,21 +240,18 @@ ${rawText}
   try {
     const payload = {
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { 
+      generationConfig: {
         temperature: 0.3,
         responseMimeType: "application/json"
       }
     };
-    
-    const response = UrlFetchApp.fetch(API_URL, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
-    
-    const json = JSON.parse(response.getContentText());
-    
+
+    // APIキーローテーション対応
+    const json = callGeminiWithKeyRotation_(MODEL_NAME, payload, { apiVersion: 'v1beta' });
+    if (json && json.error) {
+      return JSON.stringify({ fact: rawText, emotion: "（AIモデルエラー: " + json.error + "）" });
+    }
+
     if (json.candidates && json.candidates[0].content) {
       let resultText = json.candidates[0].content.parts[0].text.trim();
       const firstBrace = resultText.indexOf('{');
@@ -263,10 +259,10 @@ ${rawText}
       if (firstBrace !== -1 && lastBrace !== -1) {
         resultText = resultText.substring(firstBrace, lastBrace + 1);
       }
-      
+
       try {
-        JSON.parse(resultText); 
-        return resultText;      
+        JSON.parse(resultText);
+        return resultText;
       } catch (e) {
         throw new Error("AIの応答が正しいJSON形式ではありませんでした");
       }

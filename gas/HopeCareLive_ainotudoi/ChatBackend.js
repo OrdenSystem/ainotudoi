@@ -140,20 +140,13 @@ function registerCaseRecord(userId, content, staffId, consultId) {
 }
 
 // =======================================================
-// Gemini API 関連
+// Gemini API 関連（APIキーローテーション対応）
 // =======================================================
+// 第2引数 apiKey は後方互換のために残しているが、
+// 実際は callGeminiWithKeyRotation_ がスクリプトプロパティから複数キーを取得して使う。
 function callGeminiApi(apiKey, context, history, message, fileData) {
-  const modelId = "gemini-2.5-flash"; 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+  const modelId = "gemini-2.5-flash";
 
-  try {
-    return callGeminiApiOnce_(url, context, history, message, fileData);
-  } catch (e) {
-    return `エラー: ${e.message}`; 
-  }
-}
-
-function callGeminiApiOnce_(url, context, history, message, fileData) {
   let promptText = "あなたは障害福祉事業所の優秀な支援アシスタントです。\n";
   promptText += "以下の「利用者データ」および「これまでの会話履歴」に基づいて、ユーザーの質問に答えてください。\n";
   promptText += "回答は支援者に向けて、客観的かつ分かりやすく、Markdown形式で見やすく整形してください。\n";
@@ -185,13 +178,11 @@ function callGeminiApiOnce_(url, context, history, message, fileData) {
     generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
   };
 
-  const response = UrlFetchApp.fetch(url, {
-    method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true
-  });
-  const json = JSON.parse(response.getContentText());
-
-  if (json.error) throw new Error(json.error.message);
-  return extractGeminiText(json);
+  const result = callGeminiWithKeyRotation_(modelId, payload, { apiVersion: 'v1beta' });
+  if (result && result.error) {
+    return "エラー: " + result.error;
+  }
+  return extractGeminiText(result);
 }
 
 function extractGeminiText(json) {
