@@ -1,0 +1,10 @@
+{
+  "_comment": "プロジェクトスコープ MCP 定義。起動軽量化のため必要分のみ列挙する。グローバル ~/.claude.json の MCP には依存しないこと。Google Workspace 系（Drive/Gmail/Calendar）はユーザ要望にあるが、現状は Claude.ai 接続経由で利用可能なため明示列挙はしない。プロジェクト独自に起動が必要になった時点で下記 mcpServers に追記する。",
+  "mcpServers": {
+    "appsheet": {
+      "command": "node",
+      "args": ["C:/dev/AppsheetMCP/dist/index.js"],
+      "cwd": "C:/dev/AppsheetMCP"
+    }
+  }
+}

@@ -1,0 +1,1107 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/7916/7916550.png">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+  <title>Hope Care Live Pro</title>
+  <style>
+    /* === 基本スタイル === */
+    :root {
+      --primary-gradient: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+      --bg-color: #f0f4f8;
+      --card-bg: rgba(255, 255, 255, 0.98);
+      --text-main: #333;
+      --bar-color: #ff6b6b;
+      --appsheet-color: #00b894;
+      --status-bg: #e9ecef;
+      --tool-btn-bg: #f8f9fa;
+      --tool-btn-border: #e9ecef;
+      --sidebar-width: 280px;
+    }
+
+    body {
+      font-family: 'Noto Sans JP', sans-serif;
+      background: var(--bg-color);
+      background-image: linear-gradient(120deg, #fdfbfb 0%, #ebedee 100%);
+      color: var(--text-main);
+      margin: 0; padding: 15px;
+      display: flex; justify-content: center; align-items: center;
+      min-height: 100vh; box-sizing: border-box;
+      overflow-x: hidden;
+    }
+
+    .container {
+      position: relative; width: 100%; max-width: 1000px;
+      background: var(--card-bg); border-radius: 24px; padding: 25px;
+      box-shadow: 0 15px 50px rgba(0, 0, 0, 0.1);
+      display: flex; flex-direction: column; height: 95vh; max-height: 850px;
+      text-align: center;
+      transition: transform 0.3s ease;
+    }
+
+    /* === ヘッダー === */
+    .header-area { flex-shrink: 0; position: relative; margin-bottom: 10px; padding-top: 30px; }
+
+    .hamburger-btn {
+      position: absolute; top: -15px; left: 0; z-index: 20;
+      font-size: 24px; cursor: pointer; color: #555;
+      background: none; border: none; padding: 5px;
+    }
+    
+    .user-info-display {
+      position: absolute; top: -10px; left: 40px;
+      font-size: 13px; font-weight: bold; color: #555;
+      background: #f1f3f5; padding: 5px 12px; border-radius: 8px; z-index: 10;
+    }
+
+    /* ツールバー */
+    .tools-wrapper {
+      position: absolute; top: -15px; right: 0;
+      display: flex; gap: 6px; z-index: 10; align-items: center;
+    }
+    .tool-btn {
+      font-size: 11px; padding: 5px 10px; cursor: pointer;
+      background: var(--tool-btn-bg); border: 1px solid var(--tool-btn-border);
+      border-radius: 6px; color: #555; transition: all 0.2s;
+      display: flex; align-items: center; justify-content: center; gap: 4px;
+    }
+    .tool-btn:hover:not(:disabled) { background: #e9ecef; transform: translateY(-1px); }
+    .tool-btn:disabled { opacity: 0.5; cursor: default; }
+    .tool-btn.danger:hover { background: #ffe0e3; color: #d63031; border-color: #fab1a0; }
+    .tool-divider { width: 1px; height: 18px; background: #ddd; margin: 0 2px; }
+
+    /* タイトル */
+    h2 { margin: 10px 0 5px 0; font-size: 22px; font-weight: 700; color: #2c3e50; }
+    .subtitle-warning { font-size: 11px; color: #e74c3c; margin-bottom: 15px; font-weight: bold; }
+    
+    /* アラートバナー */
+    #alertBanner {
+      display: none; background: #fff3cd; color: #856404;
+      padding: 8px; border-radius: 8px; margin-bottom: 10px; font-size: 13px;
+      border: 1px solid #ffeeba;
+    }
+
+    /* コントロール */
+    .controls-row {
+      display: flex; align-items: center; justify-content: center;
+      gap: 15px; min-height: 50px; margin-bottom: 10px;
+    }
+    #status {
+      padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600;
+      background: var(--status-bg); color: #6c757d; transition: all 0.3s; white-space: nowrap;
+    }
+    #status.active { background: #e3fcef; color: #00b894; }
+    #status.warning { background: #fff3cd; color: #856404; }
+
+    .record-btn {
+      padding: 12px 30px; font-size: 15px; font-weight: bold; color: white;
+      border: none; border-radius: 50px; cursor: pointer;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.15); width: 160px; flex-shrink: 0;
+      transition: transform 0.2s, background 0.3s;
+    }
+    .start { background: var(--primary-gradient); }
+    .stop { background: #ff6b6b; animation: pulse-red 2s infinite; }
+    .record-btn:disabled { background: #ccc; cursor: not-allowed; animation: none; }
+    @keyframes pulse-red {
+      0% { box-shadow: 0 0 0 0 rgba(255,107,107,0.5); }
+      70% { box-shadow: 0 0 0 15px rgba(255,107,107,0); }
+      100% { box-shadow: 0 0 0 0 rgba(255,107,107,0); }
+    }
+
+    .wave-container { height: 30px; display: flex; align-items: center; gap: 3px; opacity: 0; width: 50px; transition: opacity 0.3s; }
+    .wave-container.show { opacity: 1; }
+    .bar { width: 4px; background: var(--bar-color); border-radius: 2px; height: 4px; }
+
+    /* 結果ボックス */
+    #result-box {
+      flex-grow: 1; padding: 25px;
+      background: #fff; border: 1px solid #e1e4e8; border-radius: 16px;
+      overflow-y: auto; text-align: left;
+      font-size: 18px; line-height: 1.8; color: #333;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    #result-box.size-md { font-size: 22px; line-height: 1.9; }
+    #result-box.size-lg { font-size: 28px; line-height: 2.0; font-weight: 500; }
+
+    /* フッター */
+    .footer-area {
+      flex-shrink: 0; margin-top: 15px;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 50px; position: relative;
+    }
+    .char-count { font-size: 12px; font-weight: bold; color: #7f8c8d; width: 100px; text-align: left; }
+    .debug-log { font-size: 10px; color: #b2bec3; width: 100px; text-align: right; white-space: nowrap; overflow: hidden; }
+    .btn-container { flex-grow: 1; display: flex; justify-content: center; }
+    .appsheet-btn {
+      padding: 14px 40px; font-size: 16px; font-weight: bold; color: white;
+      border: none; border-radius: 50px; cursor: pointer;
+      background: var(--appsheet-color);
+      box-shadow: 0 5px 20px rgba(0,184,148,0.3); transition: all 0.3s;
+      display: none;
+    }
+    .appsheet-btn.visible { display: block; }
+    .appsheet-btn:hover { background: #00a383; transform: translateY(-2px); }
+    .appsheet-btn:disabled { background: #95a5a6; cursor: not-allowed; }
+
+    /* === ボトムナビゲーション (PCでは非表示) === */
+    .bottom-nav {
+      display: none;
+    }
+
+    /* === サイドメニュー === */
+    .sidebar {
+      position: fixed; top: 0; left: -280px; width: 280px; height: 100%;
+      background: #2c3e50; color: white; z-index: 2000;
+      transition: left 0.3s ease; padding: 20px; box-sizing: border-box;
+      box-shadow: 5px 0 15px rgba(0,0,0,0.2); display: flex; flex-direction: column;
+    }
+    .sidebar.open { left: 0; }
+    .sidebar-overlay {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.5); z-index: 1900;
+      opacity: 0; visibility: hidden; transition: opacity 0.3s;
+    }
+    .sidebar-overlay.open { opacity: 1; visibility: visible; }
+    
+    .sidebar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #34495e; padding-bottom: 10px; }
+    .sidebar-title { font-size: 18px; font-weight: bold; }
+    .close-btn { background: none; border: none; color: white; font-size: 24px; cursor: pointer; }
+    
+    .menu-section { margin-bottom: 20px; }
+    .menu-label { font-size: 12px; color: #95a5a6; margin-bottom: 5px; font-weight: bold; }
+    .menu-item {
+      padding: 10px; background: #34495e; border-radius: 6px; margin-bottom: 8px; cursor: pointer;
+      font-size: 14px; transition: background 0.2s;
+    }
+    .menu-item:hover { background: #1abc9c; }
+    .menu-item.spec-btn { background: #e67e22; font-weight: bold; }
+
+    /* === モーダル共通 === */
+    .modal-overlay {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.5); z-index: 3000;
+      display: flex; justify-content: center; align-items: center;
+      opacity: 0; visibility: hidden; transition: opacity 0.3s;
+    }
+    .modal-overlay.show { opacity: 1; visibility: visible; }
+    .modal-card {
+      background: white; width: 90%; max-width: 600px; height: 80%;
+      border-radius: 20px; padding: 25px;
+      display: flex; flex-direction: column;
+      box-shadow: 0 25px 80px rgba(0,0,0,0.4);
+    }
+    .modal-header { font-size: 18px; font-weight: bold; color: #2c3e50; margin-bottom: 15px; display: flex; justify-content: space-between; }
+    .modal-close-icon { cursor: pointer; font-size: 24px; color: #aaa; }
+    
+    .modal-textarea {
+      flex-grow: 1; width: 100%; padding: 15px;
+      border: 1px solid #ddd; border-radius: 12px;
+      font-size: 16px; line-height: 1.6; resize: none;
+      box-sizing: border-box; font-family: inherit;
+    }
+    .specs-content {
+      flex-grow: 1; overflow-y: auto; text-align: left;
+      padding: 10px; background: #f9f9f9; border-radius: 10px; border: 1px solid #eee;
+      font-size: 14px; line-height: 1.6;
+    }
+    .specs-h { font-weight: bold; margin-top: 15px; color: #2c3e50; border-bottom: 2px solid #ddd; padding-bottom: 3px; }
+    .specs-ul { padding-left: 20px; margin: 5px 0; }
+    .specs-li { margin-bottom: 5px; }
+
+    .modal-footer { margin-top: 20px; display: flex; gap: 10px; }
+    .modal-btn { flex: 1; padding: 12px; border: none; border-radius: 50px; font-weight: bold; cursor: pointer; font-size: 15px; }
+    .cancel-btn { background: #f1f2f6; color: #636e72; }
+    .confirm-btn { background: var(--appsheet-color); color: white; }
+
+    /* === フルスクリーン・ローディング画面 === */
+    .loading-screen {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(255, 255, 255, 0.85); /* 半透明の白背景 */
+      backdrop-filter: blur(5px);
+      z-index: 9999; /* どのモーダルよりも上に表示 */
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      opacity: 0; visibility: hidden; transition: opacity 0.3s;
+    }
+    .loading-screen.show { opacity: 1; visibility: visible; }
+    
+    .loading-spinner {
+      width: 50px; height: 50px;
+      border: 6px solid #e1e4e8;
+      border-top: 6px solid var(--appsheet-color);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-bottom: 20px;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    
+    .loading-text {
+      font-size: 18px; font-weight: bold; color: #2c3e50; text-align: center; line-height: 1.5;
+    }
+
+    /* === 印刷用スタイル === */
+    @media print {
+      @page { margin: 15mm; size: auto; }
+      body, .container {
+        background: white !important; box-shadow: none !important; border: none !important;
+        display: block !important; height: auto !important; max-height: none !important;
+        margin: 0 !important; padding: 0 !important; overflow: visible !important;
+      }
+      .tools-wrapper, .controls-row, .footer-area, .modal-overlay, .bottom-nav,
+      .subtitle-warning, #alertBanner, .sidebar, .hamburger-btn, .user-info-display, .loading-screen {
+        display: none !important;
+      }
+      .header-area {
+        margin-bottom: 20px !important; text-align: left !important;
+        border-bottom: 2px solid #333 !important; padding: 0 !important;
+      }
+      .header-area h2 { font-size: 18pt !important; margin: 0 !important; color: #000 !important; }
+      #result-box {
+        border: none !important; padding: 0 !important; margin: 0 !important;
+        height: auto !important; overflow: visible !important;
+        font-family: "Noto Sans JP", sans-serif !important; font-size: 11pt !important;
+        line-height: 1.6 !important; color: #000 !important;
+        box-sizing: border-box !important; width: 98% !important; max-width: 98% !important;
+        padding-right: 2mm !important; white-space: pre-line !important; 
+        overflow-wrap: anywhere !important; word-break: break-all !important;
+      }
+    }
+
+    /* === モバイルレスポンシブ === */
+    @media (max-width: 768px) {
+      body {
+        padding: 0; background: #fdfdfd;
+      }
+      .container { 
+        padding: 15px; 
+        height: calc(100vh - 60px); 
+        border-radius: 0; box-shadow: none;
+      }
+      .header-area { margin-bottom: 10px; text-align: left; padding-top: 10px; }
+      .hamburger-btn { display: none; }
+      .user-info-display { position: relative; display: inline-block; margin-bottom: 5px; left: 0; top: 0; }
+      h2 { font-size: 18px; margin: 5px 0; text-align: center; }
+      .controls-row { flex-wrap: wrap; gap: 10px; margin-bottom: 5px; }
+      .record-btn { width: 100%; max-width: 280px; }
+      .modal-card { height: 90%; }
+      
+      .tools-wrapper { 
+        display: none; 
+        position: fixed; bottom: 75px; right: 15px; 
+        background: rgba(30, 39, 46, 0.95);
+        padding: 15px; border-radius: 12px;
+        flex-direction: column; gap: 12px;
+        box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+        z-index: 1000; backdrop-filter: blur(5px);
+      }
+      .tools-wrapper.show {
+        display: flex;
+        animation: popUp 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+      }
+      @keyframes popUp {
+        from { opacity: 0; transform: translateY(20px) scale(0.9); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      .tools-wrapper .tool-btn {
+        width: 140px; padding: 12px; font-size: 14px; color: #fff; background: #485460;
+        border: none; justify-content: flex-start; padding-left: 15px;
+      }
+      .tools-wrapper .tool-btn:active { background: #1e272e; }
+      .tools-wrapper .tool-divider { width: 100%; height: 1px; background: #808e9b; margin: 0; }
+      
+      .btn-container { display: none; }
+      .footer-area { justify-content: space-between; height: auto; margin-top: 5px; padding-bottom: 10px; }
+      
+      .bottom-nav {
+        display: flex; position: fixed; bottom: 0; left: 0; width: 100%; height: 60px;
+        background: #111; color: #fff; z-index: 2000;
+      }
+      .nav-item {
+        flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+        cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+        transition: background 0.2s;
+      }
+      .nav-item:active { background: #333; }
+      .nav-icon { font-size: 22px; margin-bottom: 3px; }
+      .nav-label { font-size: 10px; font-weight: bold; letter-spacing: 0.5px; }
+      .nav-item.active-save { color: #00f2fe; }
+      .nav-item.active-save .nav-icon { animation: pulse-save 2s infinite; }
+      @keyframes pulse-save {
+        0% { transform: scale(1); }
+        50% { transform: scale(1.2); }
+        100% { transform: scale(1); }
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div id="loadingScreen" class="loading-screen">
+    <div class="loading-spinner"></div>
+    <div id="loadingScreenText" class="loading-text">処理中...</div>
+  </div>
+
+  <div id="sidebarOverlay" class="sidebar-overlay"></div>
+
+  <div id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-title">メニュー</div>
+      <button id="sidebarClose" class="close-btn">&times;</button>
+    </div>
+    <div class="menu-section">
+      <div class="menu-label">システム情報</div>
+      <div id="btnShowSpecs" class="menu-item spec-btn">📖 システム仕様書を確認</div>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="header-area">
+      <button id="hamburgerBtn" class="hamburger-btn">☰</button>
+      <div id="userInfoArea" class="user-info-display">
+        <span id="userNameText">読込中...</span>
+      </div>
+      <div class="tools-wrapper">
+        <button id="btnSize" class="tool-btn" title="文字サイズ変更">🔠 サイズ</button>
+        <button id="btnCopy" class="tool-btn" title="コピー">📋 コピー</button>
+        <button id="btnClear" class="tool-btn danger" title="全て消去">🗑️ 消去</button>
+        <div class="tool-divider"></div>
+        <button id="btnPdfRaw" class="tool-btn" title="画面そのままPDF">📄 原文PDF</button>
+        <button id="btnPdfFinal" class="tool-btn" disabled title="登録完了後に有効化">📑 登録用PDF</button>
+      </div>
+
+      <h2>Hope Care Live Pro</h2>
+      <div class="subtitle-warning">※ アプリ起動中はブラウザのタブを閉じたり、裏側に隠さないでください</div>
+      
+      <div id="alertBanner"></div>
+
+      <div class="controls-row">
+        <div id="status">背景情報を準備中...</div>
+        <button id="actionBtn" class="record-btn start" disabled>
+          <span id="btnText">準備中</span>
+        </button>
+        <div id="wave-visualizer" class="wave-container">
+          <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+          <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="result-box"></div>
+
+    <div class="footer-area">
+      <div id="charCountArea" class="char-count">0文字</div>
+      <div class="btn-container">
+        <button id="appsheetBtn" class="appsheet-btn">ホープケアに登録</button>
+      </div>
+      <div id="debug-log" class="debug-log">Ready</div>
+    </div>
+  </div>
+
+  <nav class="bottom-nav">
+    <div class="nav-item" id="navHome">
+      <span class="nav-icon">🏠</span>
+      <span class="nav-label">ホーム</span>
+    </div>
+    <div class="nav-item" id="navMenu">
+      <span class="nav-icon">☰</span>
+      <span class="nav-label">メニュー</span>
+    </div>
+    <div class="nav-item" id="navTools">
+      <span class="nav-icon">🛠️</span>
+      <span class="nav-label">ツール</span>
+    </div>
+    <div class="nav-item" id="navSave">
+      <span class="nav-icon">💾</span>
+      <span class="nav-label" id="navSaveLabel">登録</span>
+    </div>
+  </nav>
+
+  <div id="editModal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span>登録内容の確認・編集</span>
+        <span id="editModalClose" class="modal-close-icon">&times;</span>
+      </div>
+      <textarea id="editTextarea" class="modal-textarea" placeholder="AIが整理した文章..."></textarea>
+      <div class="modal-footer">
+        <button id="modalCancelBtn" class="modal-btn cancel-btn">キャンセル</button>
+        <button id="modalConfirmBtn" class="modal-btn confirm-btn">この内容で登録</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="specsModal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span>システム仕様書</span>
+        <span id="specsModalClose" class="modal-close-icon">&times;</span>
+      </div>
+      <div class="specs-content">
+        <div class="specs-h">1. システム概要</div>
+        <p>高速音声認識とAI要約を組み合わせた、ハイブリッド型音声記録入力支援システムです</p>
+        
+        <div class="specs-h">2. 動作環境・注意点</div>
+        <ul class="specs-ul">
+          <li class="specs-li"><strong>推奨ブラウザ:</strong> Chrome, Edge, Safari (iOS対応)</li>
+          <li class="specs-li"><strong>タブの制限:</strong> <span style="color:red;">ブラウザのタブを裏側に隠すと録音が停止もしくは出力が低下します</span>常に最前面で表示してください。</li>
+          <li class="specs-li"><strong>マイク許可:</strong> 外部サーバーにホスティングされているため、初回のマイク許可ポップアップに必ず「許可」を選択してください。</li>
+        </ul>
+
+        <div class="specs-h">3. 機能詳細</div>
+        <ul class="specs-ul">
+          <li class="specs-li"><strong>リアルタイム文字起こし:</strong> 2～4秒ごとに音声を送信し、即座に画面に表示します。</li>
+          <li class="specs-li"><strong>AI要約:</strong> 登録時にAIが「えー、あー」を削除し、専門用語を補正します。</li>
+        </ul>
+      </div>
+      <div class="modal-footer">
+        <button id="specsCloseBtn" class="modal-btn cancel-btn" style="background:#ddd;">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ==========================================
+    // 設定
+    // ==========================================
+    const CONFIG = { 
+      RECORD_INTERVAL: 4000, 
+      TIMEOUT_MS: 15000,
+      SILENCE_THRESHOLD: 5, 
+      SILENCE_DURATION: 10000 
+    };
+
+    // ★重要: あなたのGASのWebアプリURLを設定してください
+    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbz-kM_vJRoWNlzdlx6n_G8qlgBrKyhzf0qY8erT4T_LC3oefswexzWWoen2CXYnVC3V/exec";
+
+    class UIManager {
+      constructor() {
+        this.btn = document.getElementById('actionBtn');
+        this.btnText = document.getElementById('btnText');
+        this.appsheetBtn = document.getElementById('appsheetBtn');
+        this.statusDiv = document.getElementById('status');
+        this.resultBox = document.getElementById('result-box');
+        this.waveContainer = document.getElementById('wave-visualizer');
+        this.userNameText = document.getElementById('userNameText');
+        this.charCountDiv = document.getElementById('charCountArea');
+        this.debugLogDiv = document.getElementById('debug-log');
+        this.alertBanner = document.getElementById('alertBanner');
+        
+        this.btnSize = document.getElementById('btnSize');
+        this.btnCopy = document.getElementById('btnCopy');
+        this.btnClear = document.getElementById('btnClear');
+        this.btnPdfRaw = document.getElementById('btnPdfRaw');
+        this.btnPdfFinal = document.getElementById('btnPdfFinal');
+
+        this.hamburgerBtn = document.getElementById('hamburgerBtn');
+        this.sidebar = document.getElementById('sidebar');
+        this.sidebarOverlay = document.getElementById('sidebarOverlay');
+        this.sidebarClose = document.getElementById('sidebarClose');
+        this.btnShowSpecs = document.getElementById('btnShowSpecs');
+
+        this.modal = document.getElementById('editModal');
+        this.modalTextarea = document.getElementById('editTextarea');
+        this.modalCancel = document.getElementById('modalCancelBtn');
+        this.modalConfirm = document.getElementById('modalConfirmBtn');
+        this.modalCloseIcon = document.getElementById('editModalClose');
+        
+        this.specsModal = document.getElementById('specsModal');
+        this.specsCloseBtn = document.getElementById('specsCloseBtn');
+        this.specsCloseIcon = document.getElementById('specsModalClose');
+        
+        // スマホ用ボトムナビ
+        this.navHome = document.getElementById('navHome');
+        this.navMenu = document.getElementById('navMenu');
+        this.navTools = document.getElementById('navTools');
+        this.navSave = document.getElementById('navSave');
+        this.toolsWrapper = document.querySelector('.tools-wrapper');
+
+        // ローディング用
+        this.loadingScreen = document.getElementById('loadingScreen');
+        this.loadingScreenText = document.getElementById('loadingScreenText');
+
+        this.finalizedText = "";
+        this.textSizeLevel = 0;
+        this.initEventListeners();
+      }
+
+      initEventListeners() {
+        // ツールバーのボタン群
+        this.btnSize.onclick = () => {
+          this.textSizeLevel = (this.textSizeLevel + 1) % 3;
+          this.resultBox.className = ""; 
+          if (this.textSizeLevel === 1) this.resultBox.classList.add('size-md');
+          if (this.textSizeLevel === 2) this.resultBox.classList.add('size-lg');
+          const labels = ["🔠 サイズ", "🔠 サイズ(大)", "🔠 サイズ(特)"];
+          this.btnSize.textContent = labels[this.textSizeLevel];
+        };
+        this.btnCopy.onclick = async () => {
+          const text = this.getText();
+          if(!text) return;
+          try {
+            await navigator.clipboard.writeText(text);
+            const orig = this.btnCopy.textContent;
+            this.btnCopy.textContent = "✅ OK!";
+            setTimeout(() => this.btnCopy.textContent = orig, 2000);
+          } catch(e) { alert("コピー失敗"); }
+        };
+        this.btnClear.onclick = () => {
+          if(this.getText().length === 0) return;
+          if(confirm("全て消去しますか？")) {
+            this.resultBox.innerText = "";
+            this.updateCharCount();
+            this.appsheetBtn.classList.remove('visible');
+            if (this.navSave) this.navSave.classList.remove('active-save');
+            this.finalizedText = "";
+            this.btnPdfFinal.disabled = true;
+            this.appsheetBtn.innerText = "ホープケアに登録";
+            this.appsheetBtn.style.background = "";
+            this.appsheetBtn.disabled = false;
+          }
+        };
+        this.btnPdfRaw.onclick = () => { this.toolsWrapper.classList.remove('show'); window.print(); };
+        this.btnPdfFinal.onclick = () => { this.toolsWrapper.classList.remove('show'); this.printFinalText(); };
+
+        // ハンバーガー＆サイドバー
+        this.hamburgerBtn.onclick = () => this.toggleSidebar(true);
+        this.sidebarClose.onclick = () => this.toggleSidebar(false);
+        this.sidebarOverlay.onclick = () => this.toggleSidebar(false);
+        this.btnShowSpecs.onclick = () => {
+          this.toggleSidebar(false);
+          this.openSpecsModal();
+        };
+
+        // モーダル閉じる処理
+        this.modalCloseIcon.onclick = () => this.modal.classList.remove('show');
+        this.specsCloseBtn.onclick = () => this.specsModal.classList.remove('show');
+        this.specsCloseIcon.onclick = () => this.specsModal.classList.remove('show');
+        
+        // --- ボトムナビ用イベント ---
+        if (this.navHome) this.navHome.onclick = () => { this.scrollToBottom(); this.toolsWrapper.classList.remove('show'); };
+        if (this.navMenu) this.navMenu.onclick = () => { this.toggleSidebar(true); this.toolsWrapper.classList.remove('show'); };
+        if (this.navTools) this.navTools.onclick = (e) => { e.stopPropagation(); this.toolsWrapper.classList.toggle('show'); };
+
+        // ツールメニュー外タップで閉じる
+        document.addEventListener('click', (e) => {
+          if (this.toolsWrapper && this.toolsWrapper.classList.contains('show')) {
+            if (!this.toolsWrapper.contains(e.target) && (!this.navTools || !this.navTools.contains(e.target))) {
+              this.toolsWrapper.classList.remove('show');
+            }
+          }
+        });
+      }
+
+      // --- ローディング画面用メソッド ---
+      showLoading(msg) {
+        this.loadingScreenText.innerText = msg || "処理中...";
+        this.loadingScreen.classList.add('show');
+      }
+      
+      hideLoading() {
+        this.loadingScreen.classList.remove('show');
+      }
+
+      scrollToBottom() {
+        this.resultBox.scrollTop = this.resultBox.scrollHeight;
+      }
+
+      toggleSidebar(isOpen) {
+        if(isOpen) {
+          this.sidebar.classList.add('open');
+          this.sidebarOverlay.classList.add('open');
+        } else {
+          this.sidebar.classList.remove('open');
+          this.sidebarOverlay.classList.remove('open');
+        }
+      }
+
+      openSpecsModal() { this.specsModal.classList.add('show'); }
+      
+      printFinalText() {
+        if(!this.finalizedText) return;
+        const currentText = this.resultBox.innerText;
+        const currentTitle = document.querySelector('h2').textContent;
+        const now = new Date();
+        const dateStr = `${now.getFullYear()}/${now.getMonth()+1}/${now.getDate()}`;
+        
+        document.querySelector('h2').textContent = `支援記録（音声ライブ録音） - ${dateStr}`;
+        this.resultBox.innerText = this.finalizedText;
+        window.print();
+        this.resultBox.innerText = currentText;
+        document.querySelector('h2').textContent = currentTitle;
+      }
+
+      setReadyState(isReady) {
+        this.btn.disabled = !isReady;
+        this.btnText.textContent = isReady ? "録音開始" : "準備中";
+        if(isReady) this.statusDiv.textContent = "待機中";
+      }
+
+      setRecordingState(isRecording) {
+        if(isRecording) {
+          this.btnText.textContent = "録音停止"; this.btn.className = "record-btn stop";
+          this.statusDiv.textContent = "● 録音中"; this.statusDiv.className = "active";
+          this.waveContainer.classList.add('show'); 
+          this.appsheetBtn.classList.remove('visible');
+          if (this.navSave) this.navSave.classList.remove('active-save');
+          this.hideAlert();
+        } else {
+          this.btnText.textContent = "録音開始"; this.btn.className = "record-btn start";
+          this.statusDiv.textContent = "待機中"; this.statusDiv.className = "";
+          this.waveContainer.classList.remove('show');
+          if(this.getText().trim().length > 0) {
+            this.appsheetBtn.classList.add('visible');
+            if (this.navSave) this.navSave.classList.add('active-save');
+          }
+          this.hideAlert();
+        }
+      }
+
+      showAlert(msg) { this.alertBanner.textContent = "⚠️ " + msg; this.alertBanner.style.display = "block"; }
+      hideAlert() { this.alertBanner.style.display = "none"; }
+      setNetworkWarning(isUnstable) {
+        if (isUnstable) { this.statusDiv.textContent = "📡 通信不安定..."; this.statusDiv.className = "warning"; }
+        else if(this.btn.className.includes("stop")) { this.statusDiv.textContent = "● 録音中"; this.statusDiv.className = "active"; }
+      }
+
+      appendText(text) {
+        if(!text) return;
+        let cText = text.trim().replace(/([。！？\?])/g, '$1\n');
+        if(!cText.endsWith('\n')) cText += '\n';
+        this.resultBox.innerText += cText;
+        this.scrollToBottom();
+        this.updateCharCount();
+      }
+
+      getText() { return this.resultBox.innerText; }
+      updateCharCount() { this.charCountDiv.innerText = this.getText().replace(/\s/g,'').length + "文字"; }
+      log(msg) { console.log(msg); this.debugLogDiv.innerText = msg; }
+      
+      showModal(text, onConfirm) {
+        this.modalTextarea.value = text;
+        this.modal.classList.add('show');
+        this.modalConfirm.onclick = () => {
+          this.modal.classList.remove('show');
+          onConfirm(this.modalTextarea.value);
+        };
+        this.modalCancel.onclick = () => {
+          this.modal.classList.remove('show');
+          this.appsheetBtn.disabled = false;
+          this.appsheetBtn.innerText = "ホープケアに登録";
+          if (this.navSave) this.navSave.querySelector('.nav-label').innerText = "登録";
+        };
+      }
+      
+      onRegistrationComplete(success, finalText) {
+        if(success) {
+          this.finalizedText = finalText;
+          this.btnPdfFinal.disabled = false;
+          this.appsheetBtn.style.background = "#27ae60";
+          if (this.navSave) {
+            this.navSave.querySelector('.nav-label').innerText = "完了";
+            this.navSave.style.color = "#27ae60";
+            this.navSave.classList.remove('active-save');
+          }
+          setTimeout(() => { 
+            this.appsheetBtn.classList.remove('visible'); 
+            this.appsheetBtn.disabled = false;
+            this.appsheetBtn.innerText = "ホープケアに登録";
+            this.appsheetBtn.style.background = "";
+            if (this.navSave) {
+               this.navSave.querySelector('.nav-label').innerText = "登録";
+               this.navSave.style.color = "";
+            }
+          }, 3000);
+        } else {
+          this.appsheetBtn.disabled = false;
+          if (this.navSave) this.navSave.querySelector('.nav-label').innerText = "登録";
+        }
+      }
+    }
+
+    class AudioVisualizer {
+      constructor(ui) {
+        this.ui = ui; this.audioContext = null; this.analyser = null; 
+        this.dataArray = null; this.animationId = null; 
+        this.bars = document.querySelectorAll('.bar'); this.silenceStartTime = 0;
+      }
+      start(stream) {
+        if(this.audioContext) this.stop();
+        this.audioContext = new (window.AudioContext||window.webkitAudioContext)();
+        this.analyser = this.audioContext.createAnalyser();
+        const src = this.audioContext.createMediaStreamSource(stream);
+        src.connect(this.analyser);
+        this.analyser.fftSize = 64;
+        this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+        this.silenceStartTime = Date.now();
+        this.draw();
+      }
+      stop() {
+        if(this.animationId) cancelAnimationFrame(this.animationId);
+        if(this.audioContext){this.audioContext.close();this.audioContext=null;}
+        this.bars.forEach(b=>b.style.height='4px');
+      }
+      draw() {
+        this.animationId = requestAnimationFrame(()=>this.draw());
+        this.analyser.getByteFrequencyData(this.dataArray);
+        let sum = 0;
+        this.bars.forEach((b,i)=>{ const v = this.dataArray[i+2]||0; sum += v; b.style.height = Math.max(4, v/2.5)+'px'; });
+        const avg = sum / this.bars.length;
+        if (avg < CONFIG.SILENCE_THRESHOLD) {
+          if (Date.now() - this.silenceStartTime > CONFIG.SILENCE_DURATION) { this.ui.showAlert("マイク入力がありません。マイク設定を確認してください。"); }
+        } else { this.silenceStartTime = Date.now(); this.ui.hideAlert(); }
+      }
+    }
+
+    class AppController {
+      constructor() {
+        this.ui = new UIManager();
+        this.visualizer = new AudioVisualizer(this.ui);
+        this.isRecording = false; this.userContextText = ""; this.currentUserName = "";
+        this.appSheetIds = {}; this.recordingStartTime = null; this.stream = null;
+        this.deepgramSocket = null; this.deepgramToken = null; this.mediaRecorder = null;
+        this.init();
+        
+        // PC用登録ボタン
+        this.ui.btn.onclick = () => this.toggleRecording();
+        this.ui.appsheetBtn.onclick = () => this.startRegistrationFlow();
+        
+        // スマホ用ナビ登録ボタン
+        if (this.ui.navSave) {
+          this.ui.navSave.onclick = () => {
+            this.ui.toolsWrapper.classList.remove('show');
+            if (this.ui.getText().trim().length === 0) {
+              alert("登録するテキストがありません");
+              return;
+            }
+            this.startRegistrationFlow();
+          };
+        }
+      }
+
+      async callGasApi(action, data) {
+        const payload = { action: action, ...data };
+        try {
+          const response = await fetch(GAS_API_URL, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" }, 
+            body: JSON.stringify(payload)
+          });
+          if (!response.ok) throw new Error("HTTP Error: " + response.status);
+          const result = await response.json();
+          if (result.error) throw new Error(result.error);
+          return result;
+        } catch (e) {
+          console.error(`API Error [${action}]:`, e);
+          throw e;
+        }
+      }
+
+      init() {
+        this.ui.log("Init...");
+        const urlParams = new URLSearchParams(window.location.search);
+        
+        this.appSheetIds = { 
+          soudan: urlParams.get('soudan') || "", 
+          riyousya: urlParams.get('riyousya') || "", 
+          staff: urlParams.get('staff') || "",
+          uid: urlParams.get('riyousya') || "", 
+          sid: urlParams.get('staff') || "" 
+        };
+        
+        this.currentUserName = urlParams.get('name') || "利用者";
+        this.ui.userNameText.innerText = this.currentUserName + " 様";
+        
+        this.ui.setReadyState(true);
+        this.ui.log("Ready"); 
+        
+        if(this.appSheetIds.uid) {
+          this.ui.log("背景読込開始...");
+          
+          this.callGasApi("getUserContext", { uid: this.appSheetIds.uid })
+            .then(res => {
+              this.userContextText = res.text || "";
+              this.ui.log("Context読込完了");
+            })
+            .catch(err => {
+              this.ui.log("Context読込失敗(スキップ)");
+            });
+
+        } else { 
+          this.ui.log("No UID"); 
+        }
+      }
+
+      async toggleRecording() { if(this.isRecording) this.stop(); else await this.start(); }
+      
+      async start() {
+        try {
+          this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          this.isRecording = true;
+          this.recordingStartTime = new Date().toISOString();
+          this.ui.setRecordingState(true);
+          this.visualizer.start(this.stream);
+          this.ui.log("トークン取得中...");
+
+          // Deepgramトークン取得
+          const payloadStr = `${this.currentUserName}|${this.userContextText}`;
+          let tokenData;
+          try {
+            tokenData = await this.callGasApi("getDeepgramToken", { payload: payloadStr });
+          } catch(e) {
+            this.ui.log("トークン取得失敗、REST fallback");
+            this.loopRecording();
+            return;
+          }
+          this.deepgramToken = tokenData.token;
+
+          // WebSocket接続（Nova-3 → Nova-2 → REST の3段階フォールバック）
+          let kwParam = '';
+          if (tokenData.keywords && tokenData.keywords.length > 0) {
+            const kw = tokenData.keywords.join(',');
+            if (encodeURIComponent(kw).length < 1000) kwParam = '&keywords=' + encodeURIComponent(kw);
+          }
+          const wsBase = 'wss://api.deepgram.com/v1/listen?language=ja&smart_format=true&punctuate=true&filler_words=false&interim_results=true&endpointing=300';
+          this.connectDeepgramWS(wsBase + '&model=nova-3' + kwParam, wsBase + '&model=nova-2' + kwParam);
+
+        } catch(e) { alert("マイクへのアクセスが拒否されました: " + e); }
+      }
+
+      connectDeepgramWS(primaryUrl, fallbackUrl) {
+        this.ui.log("WS接続中 (Nova-3)...");
+        this.deepgramSocket = new WebSocket(primaryUrl, ['token', this.deepgramToken]);
+        let hasFallenBack = false;
+
+        this.deepgramSocket.onopen = () => {
+          this.ui.log("WS接続完了 - Nova-3 リアルタイム開始");
+          this.startStreamingRecorder();
+        };
+
+        this.deepgramSocket.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          if (data.channel && data.channel.alternatives && data.channel.alternatives[0]) {
+            const transcript = data.channel.alternatives[0].transcript;
+            if (transcript && data.is_final) {
+              this.ui.appendText(transcript);
+            }
+          }
+        };
+
+        this.deepgramSocket.onerror = (err) => {
+          console.error('WebSocket error:', err);
+          if (!hasFallenBack && fallbackUrl && this.isRecording) {
+            // Nova-3失敗 → Nova-2にフォールバック
+            hasFallenBack = true;
+            this.ui.log("Nova-3失敗、Nova-2で再接続...");
+            this.deepgramSocket = new WebSocket(fallbackUrl, ['token', this.deepgramToken]);
+            this.deepgramSocket.onopen = () => {
+              this.ui.log("WS接続完了 - Nova-2 フォールバック");
+              this.startStreamingRecorder();
+            };
+            this.deepgramSocket.onmessage = (event) => {
+              const data = JSON.parse(event.data);
+              if (data.channel && data.channel.alternatives && data.channel.alternatives[0]) {
+                const transcript = data.channel.alternatives[0].transcript;
+                if (transcript && data.is_final) this.ui.appendText(transcript);
+              }
+            };
+            this.deepgramSocket.onerror = () => {
+              this.ui.log("Nova-2も失敗、REST fallback");
+              this.ui.setNetworkWarning(true);
+              if (this.isRecording) this.loopRecording();
+            };
+            this.deepgramSocket.onclose = (event) => {
+              if (this.isRecording && event.code !== 1000) {
+                this.ui.setNetworkWarning(true);
+                this.loopRecording();
+              }
+            };
+          } else {
+            this.ui.log("WS エラー - REST fallback");
+            this.ui.setNetworkWarning(true);
+            if (this.isRecording && !this.mediaRecorder) this.loopRecording();
+          }
+        };
+
+        this.deepgramSocket.onclose = (event) => {
+          this.ui.log("WS切断 code:" + event.code);
+          if (!hasFallenBack && this.isRecording && event.code !== 1000) {
+            if (fallbackUrl) {
+              hasFallenBack = true;
+              this.ui.log("WS切断、Nova-2で再接続...");
+              this.connectDeepgramWS(fallbackUrl, null);
+            } else {
+              this.ui.setNetworkWarning(true);
+              this.loopRecording();
+            }
+          }
+        };
+      }
+
+      stop() {
+        this.isRecording = false;
+        // MediaRecorder停止
+        if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+          this.mediaRecorder.stop();
+          this.mediaRecorder = null;
+        }
+        // WebSocket切断
+        if (this.deepgramSocket) {
+          if (this.deepgramSocket.readyState === WebSocket.OPEN) {
+            this.deepgramSocket.send(JSON.stringify({ type: 'CloseStream' }));
+          }
+          this.deepgramSocket.close();
+          this.deepgramSocket = null;
+        }
+        if(this.stream) this.stream.getTracks().forEach(t => t.stop());
+        this.visualizer.stop();
+        this.ui.setRecordingState(false);
+        this.ui.log("Stopped");
+      }
+
+      startStreamingRecorder() {
+        if (!this.stream || !this.deepgramSocket) return;
+        let options = { mimeType: 'audio/webm' };
+        if (!MediaRecorder.isTypeSupported('audio/webm')) options = {};
+        try {
+          this.mediaRecorder = new MediaRecorder(this.stream, options);
+          this.mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0 && this.deepgramSocket && this.deepgramSocket.readyState === WebSocket.OPEN) {
+              this.deepgramSocket.send(e.data);
+            }
+          };
+          this.mediaRecorder.start(250); // 250msごとにチャンク送信
+        } catch(e) {
+          this.ui.showAlert("録音エラー: " + e.message);
+          this.stop();
+        }
+      }
+
+      loopRecording() {
+        if(!this.isRecording) return;
+        let options = { mimeType: 'audio/webm' };
+        if (!MediaRecorder.isTypeSupported('audio/webm')) options = {}; 
+        try {
+          const rec = new MediaRecorder(this.stream, options);
+          const chunks = [];
+          rec.ondataavailable = e => { if(e.data.size>0) chunks.push(e.data); };
+          rec.onstop = () => { 
+            const b = new Blob(chunks, { type: 'audio/webm' }); 
+            if(b.size>500) this.sendAudio(b); 
+            if(this.isRecording) this.loopRecording(); 
+          };
+          rec.start(); 
+          setTimeout(() => { if(rec.state==='recording') rec.stop(); }, CONFIG.RECORD_INTERVAL);
+        } catch (e) { this.ui.showAlert("録音エラー: ブラウザ非対応"); this.stop(); }
+      }
+
+      sendAudio(blob) {
+        const reader = new FileReader(); reader.readAsDataURL(blob);
+        reader.onloadend = () => {
+          this.ui.log("送信中...");
+          const b64 = reader.result.split(',')[1];
+          const payloadStr = `${this.currentUserName}|${this.userContextText}`;
+          
+          this.callGasApi("processAudioDebug", { base64Data: b64, payload: payloadStr })
+            .then(res => {
+              this.ui.log("受信"); 
+              this.ui.setNetworkWarning(false);
+              if(res.text) this.ui.appendText(res.text);
+            })
+            .catch(e => {
+              this.ui.log("通信エラー"); 
+              this.ui.setNetworkWarning(true);
+            });
+        };
+      }
+
+      startRegistrationFlow() {
+        const text = this.ui.getText();
+        if(text.length === 0) return;
+        
+        // ★ ローディング画面を表示
+        this.ui.showLoading("AIが記録を整理しています...\n（数秒〜十数秒かかります）");
+        
+        this.ui.appsheetBtn.disabled = true;
+        this.ui.appsheetBtn.innerText = "AIが整理中...";
+        if (this.ui.navSave) this.ui.navSave.querySelector('.nav-label').innerText = "処理中...";
+        this.ui.log("Gemini整理中...");
+
+        this.callGasApi("previewSummary", { 
+          rawText: text, 
+          contextInfo: this.userContextText, 
+          staffId: this.appSheetIds.sid 
+        })
+        .then(res => {
+          this.ui.hideLoading(); // ★ 処理が終わったら隠す
+
+          let data;
+          try {
+            data = JSON.parse(res.jsonString);
+          } catch(e) {
+            data = { fact: res.jsonString, emotion: "" };
+          }
+          this.tempEmotionText = data.emotion;
+          this.ui.log("確認待ち");
+          this.ui.showModal(data.fact, (finalFactText) => {
+            this.registerToAppSheet(finalFactText, this.tempEmotionText);
+          });
+        })
+        .catch(err => {
+          this.ui.hideLoading(); // ★ エラー時も隠す
+          this.ui.log("要約エラー");
+          alert("AI要約中にエラーが発生しました。もう一度お試しください。");
+          this.ui.appsheetBtn.disabled = false;
+          this.ui.appsheetBtn.innerText = "ホープケアに登録";
+          if (this.ui.navSave) this.ui.navSave.querySelector('.nav-label').innerText = "登録";
+        });
+      }
+
+      registerToAppSheet(finalFactText, emotionText) {
+        // ★ 再度ローディング画面を表示
+        this.ui.showLoading("ケース記録へ登録しています...");
+        
+        this.ui.appsheetBtn.innerText = "登録通信中...";
+        if (this.ui.navSave) this.ui.navSave.querySelector('.nav-label').innerText = "通信中...";
+        this.ui.log("登録中...");
+        
+        this.callGasApi("registerFinalData", {
+          finalFactText: finalFactText,
+          emotionText: emotionText,
+          startTime: this.recordingStartTime,
+          appSheetIds: this.appSheetIds
+        })
+        .then(res => {
+          this.ui.hideLoading(); // ★ 登録が終わったら隠す
+
+          this.ui.appsheetBtn.innerText = res.success ? "登録完了" : "失敗";
+          this.ui.log(res.success ? "完了" : "失敗");
+          
+          if(res.success) {
+            let pdfText = finalFactText; 
+            if (emotionText && emotionText.trim() !== "" && emotionText !== "（なし）") {
+              pdfText += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+              pdfText += "【情意領域・補足メモ】\n"; 
+              pdfText += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+              pdfText += emotionText;
+            }
+            this.ui.onRegistrationComplete(true, pdfText);
+          } else {
+            this.ui.onRegistrationComplete(false);
+            alert(res.message || "登録に失敗しました");
+          }
+        })
+        .catch(err => {
+          this.ui.hideLoading(); // ★ エラー時も隠す
+          this.ui.log("登録通信エラー");
+          this.ui.onRegistrationComplete(false);
+          alert("通信エラーが発生しました。");
+        });
+      }
+
+    }
+    
+    new AppController();
+  </script>
+</body>
+</html>

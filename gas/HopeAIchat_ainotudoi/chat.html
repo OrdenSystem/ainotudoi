@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Hope AI Chat</title>
+  
+  <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/7916/7916550.png">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+  <meta name="version" content="2.0.0">
+  
+  <style>
+    /* === 基本設定 === */
+    :root {
+      --primary-gradient: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+      --bg-gradient: linear-gradient(120deg, #fdfbfb 0%, #ebedee 100%);
+      --card-bg: rgba(255, 255, 255, 0.98);
+      --text-main: #333;
+      --user-bubble-bg: var(--primary-gradient);
+      --active-green: #00b894;
+    }
+
+    body { 
+      margin: 0; padding: 15px; box-sizing: border-box;
+      font-family: 'Noto Sans JP', sans-serif; background: var(--bg-gradient); color: var(--text-main); 
+      display: flex; justify-content: center; align-items: stretch; height: 100dvh; overflow: hidden; 
+    }
+    
+    .main-wrapper { display: flex; width: 100%; max-width: 1280px; margin: 0 auto; height: 100%; gap: 15px; position: relative; }
+    .container { flex: 1; position: relative; height: 100%; background: var(--card-bg); border-radius: 20px; box-shadow: 0 15px 50px rgba(0, 0, 0, 0.1); display: flex; flex-direction: column; overflow: hidden; }
+
+    /* 左サイドバー */
+    .sidebar { position: fixed; top: 0; left: -450px; width: 280px; height: 100%; background: #2c3e50; color: white; z-index: 4000; transition: left 0.3s ease; padding: 20px; box-shadow: 10px 0 20px rgba(0,0,0,0.2); }
+    .sidebar.open { left: 0; }
+    .sidebar-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2500; display: none; }
+    .sidebar-overlay.open { display: block; }
+    .menu-item { padding: 15px; background: #34495e; border-radius: 10px; margin-bottom: 12px; cursor: pointer; display: flex; align-items: center; gap: 12px; font-size: 0.95rem; }
+
+    /* ヘッダー（ボタン横並び調整） */
+    header { background: #fff; padding: 12px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    .header-title { font-size: 1rem; font-weight: 700; color: #2c3e50; }
+    
+    .tools-wrapper { display: flex; gap: 8px; align-items: center; flex-wrap: nowrap; }
+    
+    .tool-btn { 
+      height: 32px; font-size: 11px; padding: 0 12px; cursor: pointer; 
+      border: 1px solid #eee; border-radius: 20px; background: #f8f9fa; 
+      font-weight: bold; color: #555; display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s;
+    }
+    .tool-btn:hover { background: #eef2f7; }
+
+    .toggle-wrapper { 
+      height: 32px; display: flex; align-items: center; gap: 6px; 
+      font-size: 0.75rem; font-weight: bold; color: #555; background: #f8f9fa; 
+      padding: 0 12px; border-radius: 20px; border: 1px solid #eee; 
+    }
+    .switch { position: relative; display: inline-block; width: 32px; height: 18px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 20px; }
+    .slider:before { position: absolute; content: ""; height: 12px; width: 12px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+    input:checked + .slider { background-color: #00b894; }
+    input:checked + .slider:before { transform: translateX(14px); }
+
+    /* チャットエリア */
+    #chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; background: #f9f9f9; }
+    #chat-container.size-md .message { font-size: 1.1rem; }
+    #chat-container.size-lg .message { font-size: 1.25rem; }
+    .message { max-width: 85%; padding: 12px 16px; border-radius: 18px; font-size: 0.95rem; line-height: 1.6; animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .message.user { align-self: flex-end; background: var(--user-bubble-bg); color: white; border-bottom-right-radius: 4px; }
+    .message.ai { align-self: flex-start; background: #fff; border: 1px solid #eee; border-bottom-left-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.02); }
+    .register-btn { display: inline-block; margin-top: 10px; padding: 8px 16px; background: #00b894; color: #fff; border: none; border-radius: 20px; cursor: pointer; font-size: 0.8rem; font-weight: bold; transition: transform 0.2s; }
+    .register-btn:active { transform: scale(0.95); }
+
+    .typing-indicator { display: none; align-self: flex-start; background: #fff; padding: 12px 16px; border-radius: 18px; border: 1px solid #eee; margin-bottom: 10px; }
+    .typing-indicator span { display: inline-block; width: 6px; height: 6px; background: #bbb; border-radius: 50%; animation: typing 1.4s infinite ease-in-out both; margin: 0 2px; }
+
+    /* 入力エリア */
+    #input-area { flex-shrink: 0; padding: 10px 12px; border-top: 1px solid #eee; display: flex; gap: 8px; align-items: flex-end; background: #fff; }
+    .input-tools { display: flex; flex-direction: column; gap: 6px; align-items: center; justify-content: flex-end; padding-bottom: 4px; }
+    .input-tools button { width: 36px; height: 36px; border-radius: 50%; border: none; background: #f0f4f8; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; color: #666; transition: all 0.2s; }
+    .input-tools button:hover { background: #e3eaf2; color: #333; }
+    #user-input {
+      flex: 1; padding: 10px 16px; border: 2px solid transparent; border-radius: 18px; font-size: 1rem; outline: none;
+      background: #f0f4f8; resize: none; line-height: 1.6; min-height: 2.4em; max-height: 200px; box-sizing: border-box;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    #user-input:focus { border-color: #4facfe; background: #fff; }
+    /* 戻るボタン（チャットエリア右下に浮かせる） */
+    #recall-btn { position: absolute; bottom: 120px; right: 20px; width: 36px; height: 36px; border-radius: 50%; border: none; background: rgba(0,0,0,0.4); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; z-index: 100; transition: all 0.2s; }
+    #recall-btn:hover { background: rgba(0,0,0,0.6); }
+    #send-btn { background: var(--primary-gradient); color: white; border: none; border-radius: 50%; width: 44px; height: 44px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1.15rem; flex-shrink: 0; box-shadow: 0 3px 10px rgba(79,172,254,0.35); transition: box-shadow 0.2s, transform 0.15s; }
+    #send-btn:hover { box-shadow: 0 5px 15px rgba(79,172,254,0.5); }
+    #send-btn:active { transform: scale(0.92); }
+
+    /* モーダル・通知 */
+    .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 5000; display: none; justify-content: center; align-items: center; }
+    .modal-overlay.show { display: flex; }
+    .modal-content { background: #fff; width: 95%; max-width: 850px; padding: 25px; border-radius: 20px; display: flex; flex-direction: column; gap: 15px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); animation: slideUp 0.3s ease; }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+    #modal-text { width: 100%; height: 450px; padding: 15px; border: 1px solid #ddd; border-radius: 12px; box-sizing: border-box; font-size: 1rem; line-height: 1.6; resize: vertical; }
+    
+    .toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.85); color: #fff; padding: 18px 35px; border-radius: 50px; z-index: 6000; display: none; font-weight: bold; box-shadow: 0 10px 30px rgba(0,0,0,0.3); text-align: center; font-size: 0.95rem; }
+
+    /* エラーモーダル（ユーザー向けメッセージ + システム詳細） */
+    #error-modal-overlay .modal-content { max-width: 700px; }
+    #error-modal-overlay .err-user-msg { font-size: 1.05rem; font-weight: bold; color: #d32f2f; padding: 12px 0; border-bottom: 1px solid #eee; }
+    #error-modal-overlay .err-detail-label { font-size: 0.8rem; color: #888; margin-top: 10px; }
+    #error-modal-overlay .err-detail { background: #f5f5f5; color: #333; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.75rem; line-height: 1.5; padding: 12px; border-radius: 8px; max-height: 280px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+    #error-modal-overlay .err-btn-row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px; }
+    #error-modal-overlay .err-btn-copy { background: #eee; color: #333; border: none; border-radius: 50px; padding: 10px 22px; cursor: pointer; font-weight: bold; }
+    #error-modal-overlay .err-btn-close { background: #d32f2f; color: #fff; border: none; border-radius: 50px; padding: 10px 22px; cursor: pointer; font-weight: bold; }
+
+    /* プリセット編集モーダル（広い textarea で長文プロンプトに対応） */
+    #preset-edit-modal-overlay .modal-content { max-width: 640px; }
+    #preset-edit-modal-overlay .preset-edit-title { font-weight: bold; font-size: 1.1rem; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+    #preset-edit-modal-overlay textarea { width: 100%; min-height: 220px; padding: 14px; font-size: 0.95rem; font-family: inherit; border: 1px solid #ddd; border-radius: 10px; resize: vertical; line-height: 1.6; box-sizing: border-box; }
+    #preset-edit-modal-overlay textarea:focus { outline: none; border-color: var(--active-green); }
+    #preset-edit-modal-overlay .preset-edit-btn-row { display: flex; gap: 10px; justify-content: flex-end; }
+    #preset-edit-modal-overlay .preset-edit-btn-cancel { padding: 10px 25px; border: none; background: #eee; border-radius: 50px; cursor: pointer; }
+    #preset-edit-modal-overlay .preset-edit-btn-save { padding: 10px 25px; background: #00b894; color: #fff; border: none; border-radius: 50px; font-weight: bold; cursor: pointer; }
+
+    /* サイドバー (指示メニュー) */
+    .right-sidebar { width: 260px; background: var(--card-bg); border-radius: 20px; box-shadow: 0 5px 20px rgba(0,0,0,0.05); display: flex; flex-direction: column; padding: 15px; overflow-y: auto; flex-shrink: 0; transition: right 0.3s ease; }
+    .rs-section-title { font-size: 0.75rem; color: #95a5a6; margin: 15px 0 8px 0; font-weight: bold; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+    .prompt-btn { display: block; width: 100%; padding: 10px; margin-bottom: 8px; font-size: 0.8rem; text-align: left; background: #fff; border: 1px solid #ddd; border-radius: 10px; cursor: pointer; line-height: 1.4; transition: border-color 0.2s; }
+    .prompt-btn.active { background: #e3fcef; border-color: var(--active-green); color: #00896c; font-weight: bold; }
+    .rs-section-title-row { display: flex; align-items: center; justify-content: space-between; margin: 15px 0 8px 0; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+    .rs-section-title-row .rs-section-title { margin: 0; border-bottom: none; padding: 0; flex: 1; }
+    .edit-presets-btn { padding: 2px 8px; font-size: 0.7rem; background: transparent; border: 1px solid #ccc; border-radius: 6px; cursor: pointer; color: #666; }
+    .edit-presets-btn:hover { background: #f5f5f5; }
+    .edit-presets-btn.editing { background: #ffe9e9; border-color: #ffb3b3; color: #c00; }
+    .preset-row { display: flex; align-items: stretch; gap: 4px; margin-bottom: 8px; }
+    .preset-row .prompt-btn { margin-bottom: 0; flex: 1; min-width: 0; }
+    .preset-edit-controls { display: inline-flex; gap: 2px; align-items: center; flex-shrink: 0; }
+    .preset-edit-controls button { border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 0.85rem; padding: 0 6px; border-radius: 6px; color: #666; }
+    .preset-edit-controls button:hover { background: #f5f5f5; }
+    .preset-edit-controls .preset-delete-btn { color: #d33; }
+    .add-preset-btn { display: block; width: 100%; padding: 8px; margin-top: 4px; font-size: 0.75rem; background: #f5f5f5; border: 1px dashed #ccc; border-radius: 8px; cursor: pointer; color: #666; }
+    .add-preset-btn:hover { background: #efefef; }
+
+    @media (max-width: 1024px) {
+      body { padding: 0; }
+      .main-wrapper { gap: 0; }
+      .right-sidebar { position: fixed; top: 0; right: -450px; width: 280px; height: 100%; z-index: 4000; border-radius: 0; box-shadow: -10px 0 20px rgba(0,0,0,0.1); }
+      .right-sidebar.open { right: 0; }
+      .container { border-radius: 0; height: calc(100dvh - 60px - env(safe-area-inset-bottom, 0px)); }
+      .bottom-nav { display: flex; position: fixed; bottom: 0; left: 0; width: 100%; height: calc(60px + env(safe-area-inset-bottom, 0px)); background: #111; color: #fff; z-index: 2000; padding-bottom: env(safe-area-inset-bottom, 0px); border-top: 1px solid #333;}
+      .nav-item { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 10px; cursor: pointer; }
+      header { padding: 10px 12px; flex-wrap: wrap; gap: 8px; }
+      .header-left { min-width: 0; }
+      .header-title { font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+      .tools-wrapper { gap: 5px; flex-wrap: wrap; }
+      .tone-select { font-size: 10px; padding: 0 5px; height: 28px; }
+      .tool-btn { height: 28px; font-size: 10px; padding: 0 8px; }
+      .toggle-wrapper { height: 28px; font-size: 0.7rem; padding: 0 8px; }
+      #input-area { padding: 8px; gap: 6px; }
+      .input-tools button { width: 32px; height: 32px; font-size: 1rem; }
+      #send-btn { width: 40px; height: 40px; font-size: 1rem; }
+      #recall-btn { bottom: 80px; right: 15px; width: 32px; height: 32px; font-size: 0.8rem; }
+      .scroll-bottom-btn { bottom: 80px; right: 55px; width: 36px; height: 36px; }
+      .context-badge { font-size: 0.6rem; padding: 1px 6px; }
+    }
+    .bottom-nav { display: none; }
+    #overlay-loading { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255, 255, 255, 0.85); z-index: 9999; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+    #overlay-loading.hidden { display: none; }
+    .spinner { width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #4facfe; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes typing { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+    /* A2: コピーボタン */
+    .msg-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .copy-btn { display: inline-block; margin-top: 10px; padding: 6px 14px; background: #74b9ff; color: #fff; border: none; border-radius: 20px; cursor: pointer; font-size: 0.75rem; font-weight: bold; transition: transform 0.2s; }
+    .copy-btn:active { transform: scale(0.95); }
+
+    /* A3: 音声入力（録音中スタイル） */
+    .voice-btn.recording { background: #e74c3c !important; color: #fff !important; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+
+    /* A6: ファイルプレビュー */
+    .file-preview { padding: 8px 12px; border-top: 1px solid #eee; background: #fafafa; display: flex; align-items: center; gap: 10px; font-size: 0.85rem; }
+    .file-preview img { max-height: 60px; border-radius: 8px; }
+    .file-preview .cancel-btn { background: none; border: none; color: #e74c3c; cursor: pointer; font-weight: bold; font-size: 0.85rem; }
+
+    /* A7: スクロールボタン */
+    .scroll-bottom-btn { position: absolute; bottom: 180px; right: 18px; width: 40px; height: 40px; border-radius: 50%; background: rgba(0,0,0,0.5); color: #fff; border: none; cursor: pointer; font-size: 1.2rem; display: flex; align-items: center; justify-content: center; z-index: 100; transition: opacity 0.3s; }
+    .scroll-bottom-btn:hover { background: rgba(0,0,0,0.7); }
+
+    /* A8: タイムスタンプ */
+    .msg-time { display: block; font-size: 0.65rem; color: #aaa; margin-top: 4px; text-align: right; }
+    .message.user .msg-time { color: rgba(255,255,255,0.7); }
+
+    /* C2: トーンセレクト */
+    .tone-select { height: 32px; font-size: 11px; padding: 0 8px; border: 1px solid #eee; border-radius: 20px; background: #f8f9fa; color: #555; font-weight: bold; cursor: pointer; outline: none; }
+
+    /* C5: コンテキストバッジ */
+    .context-badge { font-size: 0.7rem; font-weight: bold; padding: 2px 8px; border-radius: 10px; background: #f0f0f0; }
+  </style>
+</head>
+<body>
+
+  <div id="overlay-loading"><div class="spinner"></div><p id="loading-msg" style="margin-top:10px; font-weight:bold; color:#333;">接続中...</p></div>
+  <div id="sidebarOverlay" class="sidebar-overlay" onclick="closeAllSidebars()"></div>
+  <div id="toast" class="toast"></div>
+
+  <div id="sidebar" class="sidebar">
+    <div style="font-weight:bold; font-size:1.1rem; margin-bottom:20px; border-bottom:1px solid #34495e; padding-bottom:10px;">メニュー</div>
+    <div class="menu-item" onclick="copyLog()">📋 ログをコピー</div>
+    <div class="menu-item" onclick="resetConversation()">🔄 新しい会話</div>
+    <div class="menu-item" onclick="openInfoModal()">ℹ️ システム情報</div>
+    <button onclick="toggleSidebar(false)" style="margin-top:20px; background:none; border:1px solid #fff; color:#fff; padding:10px; width:100%; border-radius:5px; cursor:pointer;">閉じる</button>
+  </div>
+
+  <div class="main-wrapper">
+    <div class="container">
+      <header>
+        <div class="header-left">
+          <button onclick="toggleSidebar(true)" style="background:none; border:none; font-size:24px; cursor:pointer; color:#555;">☰</button>
+          <div class="header-title" id="header-title">Hope AI Chat</div>
+          <span id="context-badge" class="context-badge"></span>
+        </div>
+        <div class="tools-wrapper">
+          <div class="toggle-wrapper">
+            <label class="switch"><input type="checkbox" id="useContextToggle" checked><span class="slider"></span></label>
+            <span>連携</span>
+          </div>
+          <select id="toneSelect" class="tone-select">
+            <option value="">標準</option>
+            <option value="専門的な用語を使い、詳細に回答してください">専門的</option>
+            <option value="わかりやすく、やさしい言葉で回答してください">やさしく</option>
+            <option value="要点のみ簡潔に回答してください">要約</option>
+          </select>
+          <button id="btnSize" class="tool-btn">🔠 サイズ</button>
+        </div>
+      </header>
+
+      <div id="chat-container"><div id="typing-indicator" class="typing-indicator"><span></span><span></span><span></span></div></div>
+      <div id="file-preview" class="file-preview" style="display:none;"></div>
+      <div id="input-area">
+        <div class="input-tools">
+          <button onclick="document.getElementById('file-input').click()" title="ファイルを添付">📎</button>
+          <button id="voice-btn" class="voice-btn" onclick="startVoiceInput()" title="音声入力">🎤</button>
+        </div>
+        <input type="file" id="file-input" style="display:none;">
+        <textarea id="user-input" placeholder="メッセージを入力..." rows="2"></textarea>
+        <button id="send-btn" onclick="sendMessage()">➤</button>
+      </div>
+      <button id="recall-btn" onclick="recallMessage()" title="前回の送信内容を呼び戻す">↩</button>
+      <button id="scroll-bottom-btn" class="scroll-bottom-btn" style="display:none;" onclick="scrollToBottom()">↓</button>
+    </div>
+
+    <div id="rightSidebar" class="right-sidebar">
+      <div class="rs-section-title-row">
+        <div class="rs-section-title">基本セット</div>
+        <button id="editPresetsBtn" type="button" class="edit-presets-btn" onclick="togglePresetEditMode()">編集</button>
+      </div>
+      <div id="defaultPresets"></div>
+      <button id="addPresetBtn" type="button" class="add-preset-btn" style="display:none;" onclick="addNewPreset()">＋ 新規追加</button>
+      <div class="rs-section-title">よく使う指示 (履歴)</div>
+      <div id="historyPresets"><div style="font-size:0.7rem; color:#ccc; padding:10px;">解析中...</div></div>
+    </div>
+  </div>
+
+  <nav class="bottom-nav">
+    <div class="nav-item" onclick="document.getElementById('chat-container').scrollTop = 999999">🏠<span>最下部</span></div>
+    <div class="nav-item" onclick="toggleSidebar(true)">☰<span>メニュー</span></div>
+    <div class="nav-item" onclick="toggleRightSidebar(true)">⚡<span>指示</span></div>
+  </nav>
+
+  <div id="modal-overlay" class="modal-overlay">
+    <div class="modal-content">
+      <div style="font-weight:bold; font-size:1.1rem; border-bottom:1px solid #eee; padding-bottom:10px;">ケース記録に登録</div>
+      <select id="modal-staff" style="padding:12px; border-radius:10px; border:1px solid #ddd;"><option value="" disabled selected>読み込み中...</option></select>
+      <textarea id="modal-text"></textarea>
+      <div style="display:flex; justify-content:flex-end; gap:10px;">
+        <button onclick="closeModal()" style="padding:10px 25px; border:none; background:#eee; border-radius:50px; cursor:pointer;">キャンセル</button>
+        <button id="btn-submit" onclick="submitRegistration()" style="padding:10px 25px; background:#00b894; color:#fff; border:none; border-radius:50px; font-weight:bold; cursor:pointer;">登録する</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="error-modal-overlay" class="modal-overlay">
+    <div class="modal-content">
+      <div class="err-user-msg" id="err-user-msg">エラーが発生しました</div>
+      <div class="err-detail-label">システム管理者向け詳細：</div>
+      <pre class="err-detail" id="err-detail"></pre>
+      <div class="err-btn-row">
+        <button class="err-btn-copy" onclick="copyErrorDetail()">詳細をコピー</button>
+        <button class="err-btn-close" onclick="closeErrorModal()">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="preset-edit-modal-overlay" class="modal-overlay">
+    <div class="modal-content">
+      <div class="preset-edit-title" id="preset-edit-title">プロンプト編集</div>
+      <textarea id="preset-edit-text" placeholder="プロンプトを入力してください。改行可、長文 OK。"></textarea>
+      <div class="preset-edit-btn-row">
+        <button class="preset-edit-btn-cancel" onclick="cancelPresetEdit()">キャンセル</button>
+        <button class="preset-edit-btn-save" onclick="confirmPresetEdit()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="info-modal-overlay" class="modal-overlay">
+    <div class="modal-content" style="max-width: 600px;">
+      <div style="font-weight:bold; font-size:1.2rem; border-bottom:2px solid var(--active-green); padding-bottom:10px; color:var(--active-green);">Hope AI Chat v2.0</div>
+      <div style="font-size:0.95rem; line-height:1.7; color:#444; overflow-y:auto; max-height:60dvh; padding-right:10px;">
+        <p>福祉支援に特化した<strong>最新AIチャットアシスタント</strong>です。</p>
+        <div style="background:#f0f7f4; padding:20px; border-radius:15px; margin-bottom:15px;">
+          <p style="margin-top:0; font-weight:bold; color:#2c3e50;">主要機能</p>
+          <ul style="margin:0; padding-left:20px;">
+            <li><strong>完全同期ナレッジ</strong>: 過去の支援記録・チャット履歴をAIが把握して回答</li>
+            <li><strong>マルチモーダル解析</strong>: 写真・PDF・音声データから支援のヒントを抽出</li>
+            <li><strong>音声入力</strong>: マイクボタンで音声をテキストに変換。既存テキストへの追記も可能</li>
+            <li><strong>トーン切替</strong>: 標準・専門的・やさしく・要約の4モードで回答スタイルを変更</li>
+            <li><strong>送信履歴呼び戻し</strong>: 戻るボタンで過去の送信内容を入力欄に復元</li>
+            <li><strong>自動傾向分析</strong>: よく使う指示を履歴から学習し、ボタン一つで適用</li>
+            <li><strong>AppSheet直結登録</strong>: AIの回答をケース記録としてAppSheetへ即登録</li>
+            <li><strong>コピー機能</strong>: AI回答をワンタップでクリップボードにコピー</li>
+            <li><strong>ファイル添付</strong>: 画像プレビュー付き。10MBまで対応</li>
+          </ul>
+        </div>
+        <div style="background:#f0f0f8; padding:15px; border-radius:15px; margin-bottom:15px;">
+          <p style="margin-top:0; font-weight:bold; color:#2c3e50;">操作ヒント</p>
+          <ul style="margin:0; padding-left:20px; font-size:0.85rem;">
+            <li>Tab → Enter で素早く送信</li>
+            <li>連携トグルOFFでコンテキストなし回答（高速）</li>
+            <li>新しい会話: メニュー > 新しい会話</li>
+          </ul>
+        </div>
+        <p style="font-size:0.8rem; color:#888;">※全ての情報はGoogle Drive上のセキュアな領域で保護されています。</p>
+      </div>
+      <div style="display:flex; justify-content:flex-end;"><button onclick="closeInfoModal()" style="padding:12px 35px; background:var(--primary-gradient); color:#fff; border:none; border-radius:50px; font-weight:bold; cursor:pointer;">閉じる</button></div>
+    </div>
+  </div>
+
+  <script>
+    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbxtJEfeR79BS8RUP5gMzatpxXDlIn0T9YmMQezsZhl-F-sNfvYPciZaJ-Rj_lvzQ64/exec";
+    const urlParams = new URLSearchParams(window.location.search);
+    const userId = urlParams.get('targetId');
+    const consultId = urlParams.get('consultId');
+    let selectedFile = null;
+    let textSizeLevel = 0;
+    let lastMessage = null; // A1: 再送用に最後のメッセージを保持
+    const sentHistory = JSON.parse(sessionStorage.getItem('hopeai_sentHistory') || '[]'); // 送信履歴（新しい順）
+    let recallIndex = -1; // 戻るボタンの現在位置
+    let typingTimeout = null; // A5: タイピングインジケーターのタイムアウト
+    const activePrompts = new Set();
+    let defaultPrompts = ["# 200文字以内で回答", "# SOAP形式で出力", "# 箇条書きで要点を3つほど回答", "# 挨拶なしで回答のみ出力"];
+    let isEditingPresets = false;
+
+    // バージョンチェック: 更新があればキャッシュを無視してリロード
+    const APP_VERSION = document.querySelector('meta[name="version"]').content;
+    const lastVersion = localStorage.getItem('hopeai_version');
+    if (lastVersion && lastVersion !== APP_VERSION) {
+      localStorage.setItem('hopeai_version', APP_VERSION);
+      location.reload(true);
+    } else {
+      localStorage.setItem('hopeai_version', APP_VERSION);
+    }
+
+    // GAS Cold Start 対策: ページ読み込み直後にウォームアップ
+    console.log("[HopeAI] ping ウォームアップ送信");
+    const pingStart = performance.now();
+    fetch(GAS_API_URL, { method: "POST", body: JSON.stringify({ action: "ping" }) })
+      .then(r => r.json())
+      .then(() => console.log(`[HopeAI] ping 応答OK (${Math.round(performance.now() - pingStart)}ms)`))
+      .catch(e => console.warn(`[HopeAI] ping 失敗: ${e.message}`));
+
+    async function callGas(action, data, retries = 2, timeoutMs = 30000) {
+      for (let i = 0; i <= retries; i++) {
+        const attempt = i + 1;
+        const start = performance.now();
+        try {
+          console.log(`[HopeAI] ${action} 呼出し (試行${attempt}/${retries + 1})`);
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeoutMs);
+          const res = await fetch(GAS_API_URL, {
+            method: "POST",
+            body: JSON.stringify({ action, ...data }),
+            signal: controller.signal
+          });
+          clearTimeout(timer);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const json = await res.json();
+          console.log(`[HopeAI] ${action} 成功 (${Math.round(performance.now() - start)}ms)`, json);
+          return json;
+        } catch (e) {
+          console.warn(`[HopeAI] ${action} 失敗 (試行${attempt}, ${Math.round(performance.now() - start)}ms): ${e.message}`);
+          if (i === retries) throw e;
+          console.log(`[HopeAI] ${action} ${1000 * (i + 1)}ms後にリトライ...`);
+          await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+        }
+      }
+    }
+
+    function showOverlay(v, t) {
+      const ol = document.getElementById('overlay-loading');
+      if (t) document.getElementById('loading-msg').innerText = t;
+      if (v) ol.classList.remove('hidden'); else ol.classList.add('hidden');
+    }
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 2500);
+    }
+
+    window.onload = async () => {
+      if (!userId) { showOverlay(false); return; }
+      showOverlay(true, "接続中...");
+      renderDefaultPresets();
+      callGas("getDefaultPresets", {}).then(state => {
+        if (state && Array.isArray(state.presets) && state.presets.length > 0) {
+          defaultPrompts = state.presets;
+          renderDefaultPresets();
+        }
+      }).catch(e => { console.warn("getDefaultPresets failed: ", e); });
+
+      // A3: 音声入力非対応ブラウザではボタンを非表示
+      if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        document.getElementById('voice-btn').style.display = 'none';
+      }
+
+      // A7: スクロールボタンの表示制御
+      const chatC = document.getElementById('chat-container');
+      chatC.addEventListener('scroll', () => {
+        const btn = document.getElementById('scroll-bottom-btn');
+        const isNearBottom = chatC.scrollHeight - chatC.scrollTop - chatC.clientHeight < 200;
+        btn.style.display = isNearBottom ? 'none' : 'flex';
+      });
+
+      try {
+        const state = await callGas("getBasicUserInfo", { targetId: userId });
+        if (state.error) throw new Error(state.error);
+        document.getElementById('header-title').textContent = `${state.userName} 様サポート`;
+        appendMsg('ai', DOMPurify.sanitize(marked.parse(`**${state.userName}様**、お待たせしました。本日のご用件をどうぞ。`)), true);
+        console.log("[HopeAI] 初期化完了 - ユーザー表示OK");
+
+        // C5: コンテキストステータス表示
+        const badge = document.getElementById('context-badge');
+        badge.textContent = state.hasContext ? '📚 連携中' : '📭 連携なし';
+        badge.style.color = state.hasContext ? '#00b894' : '#999';
+      } catch (e) {
+        document.getElementById('header-title').textContent = "Hope AI Chat";
+        appendMsg('ai', "接続に時間がかかっています。メッセージ入力は可能です。", false);
+        console.error("[HopeAI] 初期化失敗 - フォールバック表示:", e.message);
+      } finally {
+        showOverlay(false);
+        console.log("[HopeAI] オーバーレイ解除");
+      }
+
+      // 非必須の処理はバックグラウンドで（失敗しても画面に影響なし）
+      callGas("getHistoryPresets", { targetId: userId }).then(state => {
+        const area = document.getElementById('historyPresets');
+        if (state.presets && state.presets.length > 0) { area.innerHTML = ""; state.presets.forEach(p => area.appendChild(createPresetBtn(p))); }
+      }).catch(() => {});
+      callGas("getStaffList", {}).then(data => {
+        const select = document.getElementById('modal-staff');
+        select.innerHTML = '<option value="" disabled selected>記録者を選択</option>';
+        if (data.staffList) data.staffList.forEach(s => { const op = document.createElement('option'); op.value = s.id; op.textContent = s.name; select.appendChild(op); });
+      }).catch(() => {});
+    };
+
+    function createPresetBtn(text, opts) {
+      opts = opts || {};
+      const wrapper = document.createElement('div');
+      wrapper.className = 'preset-row';
+
+      const btn = document.createElement('button');
+      btn.type = "button";
+      btn.className = "prompt-btn";
+      btn.textContent = text;
+      if (activePrompts.has(text)) btn.classList.add('active');
+      btn.onclick = () => {
+        if (isEditingPresets && opts.editable) return;
+        if (activePrompts.has(text)) {
+          activePrompts.delete(text);
+          btn.classList.remove('active');
+        } else {
+          activePrompts.add(text);
+          btn.classList.add('active');
+        }
+      };
+      wrapper.appendChild(btn);
+
+      if (opts.editable && isEditingPresets) {
+        const controls = document.createElement('div');
+        controls.className = 'preset-edit-controls';
+
+        const editBtn = document.createElement('button');
+        editBtn.type = "button";
+        editBtn.textContent = '✎';
+        editBtn.title = '編集';
+        editBtn.onclick = (ev) => { ev.stopPropagation(); editPresetAt(opts.index); };
+        controls.appendChild(editBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = "button";
+        delBtn.textContent = '×';
+        delBtn.className = 'preset-delete-btn';
+        delBtn.title = '削除';
+        delBtn.onclick = (ev) => { ev.stopPropagation(); deletePresetAt(opts.index); };
+        controls.appendChild(delBtn);
+
+        wrapper.appendChild(controls);
+      }
+
+      return wrapper;
+    }
+
+    function renderDefaultPresets() {
+      const area = document.getElementById('defaultPresets');
+      area.innerHTML = '';
+      defaultPrompts.forEach((p, idx) => {
+        area.appendChild(createPresetBtn(p, { editable: true, index: idx }));
+      });
+    }
+
+    function togglePresetEditMode() {
+      isEditingPresets = !isEditingPresets;
+      const editBtn = document.getElementById('editPresetsBtn');
+      const addBtn = document.getElementById('addPresetBtn');
+      if (isEditingPresets) {
+        editBtn.textContent = '完了';
+        editBtn.classList.add('editing');
+        addBtn.style.display = 'block';
+      } else {
+        editBtn.textContent = '編集';
+        editBtn.classList.remove('editing');
+        addBtn.style.display = 'none';
+      }
+      renderDefaultPresets();
+    }
+
+    function addNewPreset() {
+      showPresetEditModal('プロンプトを追加', '# ', (text) => {
+        if (!text) return;
+        const next = defaultPrompts.slice();
+        next.push(text);
+        savePresets(next);
+      });
+    }
+
+    function editPresetAt(index) {
+      const cur = defaultPrompts[index] || '';
+      showPresetEditModal('プロンプトを編集', cur, (text) => {
+        if (!text || text === cur) return;
+        const next = defaultPrompts.slice();
+        // 編集前のテキストが選択中なら、選択も追従させる
+        if (activePrompts.has(cur)) { activePrompts.delete(cur); activePrompts.add(text); }
+        next[index] = text;
+        savePresets(next);
+      });
+    }
+
+    let _presetEditCallback = null;
+    function showPresetEditModal(title, currentText, callback) {
+      document.getElementById('preset-edit-title').textContent = title || 'プロンプト編集';
+      const ta = document.getElementById('preset-edit-text');
+      ta.value = currentText || '';
+      _presetEditCallback = callback;
+      document.getElementById('preset-edit-modal-overlay').classList.add('show');
+      setTimeout(() => {
+        ta.focus();
+        const len = ta.value.length;
+        ta.setSelectionRange(len, len);
+      }, 50);
+    }
+
+    function cancelPresetEdit() {
+      _presetEditCallback = null;
+      document.getElementById('preset-edit-modal-overlay').classList.remove('show');
+    }
+
+    function confirmPresetEdit() {
+      const text = (document.getElementById('preset-edit-text').value || '').trim();
+      const cb = _presetEditCallback;
+      _presetEditCallback = null;
+      document.getElementById('preset-edit-modal-overlay').classList.remove('show');
+      if (cb) cb(text);
+    }
+
+    function deletePresetAt(index) {
+      const cur = defaultPrompts[index] || '';
+      if (!window.confirm('「' + cur + '」を削除しますか？')) return;
+      const next = defaultPrompts.slice();
+      next.splice(index, 1);
+      activePrompts.delete(cur);
+      savePresets(next);
+    }
+
+    function savePresets(nextArr) {
+      callGas("saveDefaultPresets", { presets: nextArr }).then(res => {
+        if (res && res.status === "Success") {
+          defaultPrompts = res.presets || nextArr;
+          renderDefaultPresets();
+        } else {
+          window.alert('保存に失敗しました: ' + (res && res.message ? res.message : '不明なエラー'));
+        }
+      }).catch(e => {
+        window.alert('保存に失敗しました: ' + (e && e.message ? e.message : '通信エラー'));
+      });
+    }
+
+    const textarea = document.getElementById('user-input');
+    textarea.addEventListener('input', function() { this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px'; recallIndex = -1; });
+
+    async function sendMessage() {
+      // 音声入力中なら停止してから送信（onendでテキスト復元させない）
+      if (activeRecognition) {
+        voiceCancelledBySend = true;
+        activeRecognition.stop();
+        activeRecognition = null;
+      }
+      const sendBtn = document.getElementById('send-btn');
+      if (sendBtn.disabled) return;
+      sendBtn.disabled = true;
+      sendBtn.style.opacity = '0.5';
+      let text = textarea.value.trim();
+      if (!text && !selectedFile) { sendBtn.disabled = false; sendBtn.style.opacity = '1'; return; }
+      if (activePrompts.size > 0) text += `\n\n=== 指示オプション ===\n` + Array.from(activePrompts).join("\n");
+      // C2: トーン指示を付加
+      const tone = document.getElementById('toneSelect').value;
+      if (tone) text += `\n\n=== トーン指示 ===\n# ${tone}`;
+      const history = Array.from(document.querySelectorAll('.message')).slice(-10).map(m => ({ role: m.classList.contains('user') ? 'user' : 'model', text: m.querySelector('.txt').innerText }));
+      // A1: 再送用にメッセージを保存
+      lastMessage = { text, file: selectedFile };
+      // 送信履歴に追加（トーン・指示オプション付加前の生テキストを保存）
+      sentHistory.unshift(textarea.value.trim());
+      sessionStorage.setItem('hopeai_sentHistory', JSON.stringify(sentHistory.slice(0, 50)));
+      recallIndex = -1;
+      appendMsg('user', selectedFile ? `📎 [添付あり] ${text}` : text);
+      textarea.value = ""; textarea.style.height = 'auto';
+      // A6: ファイルプレビューをクリア
+      document.getElementById('file-preview').style.display = 'none';
+      document.getElementById('file-preview').innerHTML = '';
+      document.getElementById('typing-indicator').style.display = 'block';
+      document.getElementById('chat-container').scrollTop = 999999;
+      // A5: タイピングインジケーターのタイムアウト設定
+      typingTimeout = setTimeout(() => {
+        document.getElementById('typing-indicator').style.display = 'none';
+        appendMsg('ai', '応答に時間がかかっています。もう一度お試しください。', false);
+      }, 60000);
+      try {
+        const res = await callGas("processUserMessage", { userId, userMessage: text, fileData: selectedFile, useContext: document.getElementById('useContextToggle').checked, frontendHistory: history }, 2, 120000);
+        // A5: タイムアウトをクリア
+        clearTimeout(typingTimeout);
+        document.getElementById('typing-indicator').style.display = 'none';
+        appendMsg('ai', DOMPurify.sanitize(marked.parse(res.reply)), true);
+      } catch (e) {
+        // A1: エラーハンドリング - タイムアウトクリア、typing非表示、エラーメッセージ+再送ボタン
+        clearTimeout(typingTimeout);
+        document.getElementById('typing-indicator').style.display = 'none';
+        appendMsg('ai', `エラーが発生しました: ${e.message}<br><button class="register-btn" onclick="retrySend()">🔄 再送する</button>`, false);
+      }
+      selectedFile = null;
+      sendBtn.disabled = false;
+      sendBtn.style.opacity = '1';
+    }
+
+    // A1: 再送関数 - lastMessage を使って再送
+    async function retrySend() {
+      if (!lastMessage) return;
+      const sendBtn = document.getElementById('send-btn');
+      if (sendBtn.disabled) return;
+      sendBtn.disabled = true;
+      sendBtn.style.opacity = '0.5';
+      const text = lastMessage.text;
+      const fileData = lastMessage.file;
+      const history = Array.from(document.querySelectorAll('.message')).slice(-10).map(m => ({ role: m.classList.contains('user') ? 'user' : 'model', text: m.querySelector('.txt').innerText }));
+      document.getElementById('typing-indicator').style.display = 'block';
+      document.getElementById('chat-container').scrollTop = 999999;
+      // A5: タイピングインジケーターのタイムアウト設定
+      typingTimeout = setTimeout(() => {
+        document.getElementById('typing-indicator').style.display = 'none';
+        appendMsg('ai', '応答に時間がかかっています。もう一度お試しください。', false);
+      }, 60000);
+      try {
+        const res = await callGas("processUserMessage", { userId, userMessage: text, fileData: fileData, useContext: document.getElementById('useContextToggle').checked, frontendHistory: history }, 2, 120000);
+        clearTimeout(typingTimeout);
+        document.getElementById('typing-indicator').style.display = 'none';
+        appendMsg('ai', DOMPurify.sanitize(marked.parse(res.reply)), true);
+      } catch (e) {
+        clearTimeout(typingTimeout);
+        document.getElementById('typing-indicator').style.display = 'none';
+        appendMsg('ai', `エラーが発生しました: ${e.message}<br><button class="register-btn" onclick="retrySend()">🔄 再送する</button>`, false);
+      }
+      sendBtn.disabled = false;
+      sendBtn.style.opacity = '1';
+    }
+
+    function appendMsg(sender, html, withAction=false) {
+      const d = document.createElement('div'); d.className = `message ${sender}`;
+      d.innerHTML = `<div class="txt">${html}</div>`;
+      // A2: AIメッセージにコピーボタンとケース記録登録ボタンを追加
+      if (withAction && sender === 'ai') {
+        d.innerHTML += `<div class="msg-actions"><button class="register-btn" onclick="openModal(this)">📋 ケース記録に登録</button><button class="copy-btn" onclick="copyMsgText(this)">📋 コピー</button></div>`;
+      }
+      // A8: タイムスタンプを追加
+      const now = new Date();
+      const timeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+      d.innerHTML += `<span class="msg-time">${timeStr}</span>`;
+      document.getElementById('chat-container').insertBefore(d, document.getElementById('typing-indicator'));
+      document.getElementById('chat-container').scrollTop = 999999;
+    }
+
+    // A2: メッセージテキストをクリップボードにコピー
+    function copyMsgText(btn) {
+      const msgDiv = btn.closest('.message');
+      const txtEl = msgDiv.querySelector('.txt');
+      if (txtEl) {
+        navigator.clipboard.writeText(txtEl.innerText).then(() => {
+          showToast("📋 コピーしました");
+        });
+      }
+    }
+
+    // A3: 音声入力
+    let activeRecognition = null;
+    let voiceCancelledBySend = false;
+    function startVoiceInput() {
+      const voiceBtn = document.getElementById('voice-btn');
+      if (activeRecognition) {
+        activeRecognition.stop();
+        return;
+      }
+      const SpeechRecognition = window.webkitSpeechRecognition || window.SpeechRecognition;
+      if (!SpeechRecognition) return;
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'ja-JP';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      activeRecognition = recognition;
+      voiceBtn.classList.add('recording');
+      // 既存テキストを保持して追記モードにする
+      const existingText = textarea.value;
+      let finalText = '';
+      let silenceTimer = null;
+      // 最大30秒で安全停止
+      const maxTimer = setTimeout(() => { recognition.stop(); }, 30000);
+      const resetSilence = () => {
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => { recognition.stop(); }, 3000);
+      };
+      recognition.onresult = (event) => {
+        resetSilence();
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            finalText += event.results[i][0].transcript;
+          } else {
+            interim += event.results[i][0].transcript;
+          }
+        }
+        // 既存テキスト + 確定 + 暫定テキストをリアルタイム表示
+        textarea.value = existingText + finalText + interim;
+        textarea.style.height = 'auto';
+        textarea.style.height = textarea.scrollHeight + 'px';
+      };
+      recognition.onspeechend = () => { resetSilence(); };
+      recognition.onend = () => {
+        clearTimeout(silenceTimer);
+        clearTimeout(maxTimer);
+        activeRecognition = null;
+        voiceBtn.classList.remove('recording');
+        // 送信によるstopの場合はテキスト復元しない
+        if (voiceCancelledBySend) { voiceCancelledBySend = false; return; }
+        textarea.value = existingText + finalText;
+        textarea.style.height = 'auto';
+        textarea.style.height = textarea.scrollHeight + 'px';
+      };
+      recognition.onerror = (e) => {
+        clearTimeout(silenceTimer);
+        clearTimeout(maxTimer);
+        activeRecognition = null;
+        voiceBtn.classList.remove('recording');
+        if (e.error !== 'no-speech') showToast('音声認識エラー: ' + e.error);
+      };
+      recognition.start();
+    }
+
+    // 戻るボタン: 送信履歴を遡って入力欄に表示
+    function recallMessage() {
+      if (sentHistory.length === 0) return;
+      recallIndex++;
+      if (recallIndex >= sentHistory.length) recallIndex = sentHistory.length - 1;
+      textarea.value = sentHistory[recallIndex];
+      textarea.style.height = 'auto';
+      textarea.style.height = textarea.scrollHeight + 'px';
+      textarea.focus();
+    }
+
+    // A7: スクロールボタン
+    function scrollToBottom() {
+      const chatC = document.getElementById('chat-container');
+      chatC.scrollTo({ top: chatC.scrollHeight, behavior: 'smooth' });
+    }
+
+    // C1: 会話リセット
+    function resetConversation() {
+      const chatContainer = document.getElementById('chat-container');
+      const messages = chatContainer.querySelectorAll('.message');
+      messages.forEach(m => m.remove());
+      activePrompts.clear();
+      document.querySelectorAll('.prompt-btn').forEach(btn => btn.classList.remove('active'));
+      toggleSidebar(false);
+      showToast("会話をリセットしました");
+    }
+
+    function openModal(btn) { const msgDiv = btn.closest('.message'); document.getElementById('modal-text').value = msgDiv.querySelector('.txt').innerText; document.getElementById('modal-overlay').classList.add('show'); }
+    function openInfoModal() { document.getElementById('info-modal-overlay').classList.add('show'); toggleSidebar(false); }
+    function closeInfoModal() { document.getElementById('info-modal-overlay').classList.remove('show'); }
+    function closeModal() { document.getElementById('modal-overlay').classList.remove('show'); }
+
+    async function submitRegistration() {
+      const staffId = document.getElementById('modal-staff').value;
+      if (!staffId) { showToast("記録者を選択してください"); return; }
+      showOverlay(true, "ケース記録に登録中..."); // 半透明オーバーレイを表示
+      const btn = document.getElementById('btn-submit');
+      btn.disabled = true;
+      try {
+        const res = await callGas("registerCaseRecord", { userId, content: document.getElementById('modal-text').value, staffId, consultId });
+        if (res && res.status === "Success") {
+          showToast("✅ ケース記録に登録完了しました");
+          closeModal();
+        } else if (res && res.status === "Error") {
+          // サーバー側で構造化エラーとして返された場合
+          showErrorModal(res.userMessage || "この画面をシステム管理者にお伝えください", res.detail || "(詳細なし)");
+        } else if (res && res.error) {
+          // doPostの外側catchが発火した場合
+          showErrorModal("この画面をシステム管理者にお伝えください", "サーバーエラー:\n" + res.error);
+        } else {
+          showErrorModal("この画面をシステム管理者にお伝えください", "予期しないレスポンス:\n" + JSON.stringify(res));
+        }
+      } catch (e) {
+        // 通信失敗・タイムアウト等
+        showErrorModal("この画面をシステム管理者にお伝えください", "通信エラー: " + (e.message || e));
+      }
+      finally { showOverlay(false); btn.disabled = false; }
+    }
+
+    function showErrorModal(userMsg, detail) {
+      document.getElementById('err-user-msg').textContent = userMsg;
+      document.getElementById('err-detail').textContent = detail;
+      document.getElementById('error-modal-overlay').classList.add('show');
+    }
+
+    function closeErrorModal() {
+      document.getElementById('error-modal-overlay').classList.remove('show');
+    }
+
+    function copyErrorDetail() {
+      const text = document.getElementById('err-detail').textContent;
+      navigator.clipboard.writeText(text).then(() => { showToast("📋 詳細をコピーしました"); });
+    }
+
+    function toggleSidebar(open) { document.getElementById('sidebar').classList.toggle('open', open); document.getElementById('sidebarOverlay').classList.toggle('open', open); }
+    function toggleRightSidebar(open) { document.getElementById('rightSidebar').classList.toggle('open', open); document.getElementById('sidebarOverlay').classList.toggle('open', open); }
+    function closeAllSidebars() { toggleSidebar(false); toggleRightSidebar(false); closeInfoModal(); }
+    function copyLog() { navigator.clipboard.writeText(Array.from(document.querySelectorAll('.txt')).map(e => e.innerText).join("\n\n---\n\n")).then(() => { showToast("📋 ログをコピーしました"); toggleSidebar(false); }); }
+
+    document.getElementById('btnSize').onclick = () => { textSizeLevel = (textSizeLevel + 1) % 3; const c = document.getElementById('chat-container'); c.className = ""; if(textSizeLevel==1) c.classList.add("size-md"); if(textSizeLevel==2) c.classList.add("size-lg"); };
+    document.getElementById('file-input').onchange = (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      // A6: ファイルサイズ制限 (10MB)
+      if (f.size > 10 * 1024 * 1024) {
+        showToast("ファイルサイズが10MBを超えています");
+        e.target.value = '';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        selectedFile = { name: f.name, type: f.type, data: evt.target.result.split(',')[1] };
+        textarea.placeholder = `📎 添付中: ${f.name}`;
+        // A6: ファイルプレビュー表示
+        const preview = document.getElementById('file-preview');
+        preview.style.display = 'flex';
+        if (f.type.startsWith('image/')) {
+          // 画像ファイルの場合はサムネイル表示
+          preview.innerHTML = `<img src="${evt.target.result}" alt="プレビュー"><span>${f.name}</span><button class="cancel-btn" onclick="cancelFileAttachment()">× 取消</button>`;
+        } else {
+          // 画像以外はファイル名をテキスト表示
+          preview.innerHTML = `<span>📎 ${f.name}</span><button class="cancel-btn" onclick="cancelFileAttachment()">× 取消</button>`;
+        }
+      };
+      reader.readAsDataURL(f);
+    };
+
+    // A6: 添付ファイル取り消し
+    function cancelFileAttachment() {
+      selectedFile = null;
+      document.getElementById('file-preview').style.display = 'none';
+      document.getElementById('file-preview').innerHTML = '';
+      textarea.placeholder = 'メッセージを入力...';
+      document.getElementById('file-input').value = '';
+    }
+  </script>
+</body>
+</html>
