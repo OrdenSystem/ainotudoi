@@ -241,8 +241,8 @@ function runJob_CloudSQL_(jobType, payload) {
       updateAiResult_CloudSQL(p.ID, executionResult);
       return 'AppSheetへ結果送信完了';
 
-    case '帳票スプシ生成':
-      return runHyohyoSpushiGenerate_(payload);
+    case '帳票スプシ生成':                       
+      return runHyohyoSpushiGenerate_(payload);   
 
     default:
       throw new Error('Unknown job type: ' + jobType);
@@ -294,12 +294,12 @@ function insertShutsuryokusakiFile_CloudSQL(record) {
     if (record.登録日時) {
       stmt.setTimestamp(12, Jdbc.newTimestamp(new Date(record.登録日時).getTime()));
     } else {
-      stmt.setTimestamp(12, nowJST_());
+      stmt.setTimestamp(12, Jdbc.newTimestamp(new Date().getTime()));
     }
     if (record.更新日時) {
       stmt.setTimestamp(13, Jdbc.newTimestamp(new Date(record.更新日時).getTime()));
     } else {
-      stmt.setTimestamp(13, nowJST_());
+      stmt.setTimestamp(13, Jdbc.newTimestamp(new Date().getTime()));
     }
 
     if (record.temperature != null) {
@@ -386,8 +386,8 @@ function updateAiResult_CloudSQL(fileId, resultMessage) {
     var sql = 'UPDATE "出力先ファイル" SET "AI帳票出力結果" = ?, "AI帳票出力日時" = ?, "更新日時" = ? WHERE "出力先ファイルID" = ?';
     stmt = conn.prepareStatement(sql);
     stmt.setString(1, resultMessage);
-    stmt.setTimestamp(2, nowJST_());
-    stmt.setTimestamp(3, nowJST_());
+    stmt.setTimestamp(2, Jdbc.newTimestamp(new Date().getTime()));
+    stmt.setTimestamp(3, Jdbc.newTimestamp(new Date().getTime()));
     stmt.setString(4, fileId);
     return stmt.executeUpdate();
 
@@ -409,7 +409,7 @@ function updateFlag_CloudSQL(fileId, flagValue) {
     var sql = 'UPDATE "出力先ファイル" SET "フラグ" = ?, "更新日時" = ? WHERE "出力先ファイルID" = ?';
     stmt = conn.prepareStatement(sql);
     stmt.setBoolean(1, flagValue);
-    stmt.setTimestamp(2, nowJST_());
+    stmt.setTimestamp(2, Jdbc.newTimestamp(new Date().getTime()));
     stmt.setString(3, fileId);
     return stmt.executeUpdate();
 
@@ -506,13 +506,4 @@ function test_jobQueue_CloudSQL() {
   } finally {
     closeCloudSql_(conn, stmt, rs);
   }
-}
-
-// ==================================================================================
-// 共通: 現在の JST 時刻を JdbcTimestamp で返す
-// UTC のミリ秒に 9 時間オフセットを足して JST に変換する
-// ==================================================================================
-function nowJST_() {
-  var jstMillis = new Date().getTime() + (9 * 60 * 60 * 1000);
-  return Jdbc.newTimestamp(jstMillis);
 }

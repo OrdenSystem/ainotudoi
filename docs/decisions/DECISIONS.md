@@ -113,3 +113,54 @@ GAS `GeminiAPI_App_SF接続_ainotudoi` の SF 認証が `OAUTH_AUTHORIZATION_BLO
 - **影響範囲**: `.mcp.json`（appsheet 追記）, `C:\dev\AppsheetMCP\`（新規 clone・リポ外）, `C:\dev\AppsheetMCP\.env`（機密・gitignore）
 - **判断者**: Claude Code
 - **注意**: MCP サーバーは Claude Code 起動時に読込まれるため、登録は**再起動後に有効化**。再起動後 `appsheet_preflight` で疎通確認する。書込み(Phase 4)を使う場合は `npm run cookie:init` で Cookie 取得が別途必要（約30日で失効）。
+
+## 2026-06-10: 愛の集い向け GCP API キー（Gemini 制約）を 3 つ発行
+
+GAS の Script Properties にセットする Gemini 用 API キーを、ユーザ指示により発行（ローテーション予備として 3 つ）。
+
+- **判断1: 発行先 GCP プロジェクトを `ainotudoisql` に特定**
+  - **理由**: 「愛の集いプロジェクト」の指示に対し、`gcloud projects list` 中で名称一致（ainotudoiSQL）。さらに当プロジェクトに Cloud SQL インスタンス `hopecare-db-ainotudoi`（POSTGRES_15）が存在し、AppSheet のデータソース `愛の集い-SQLdatabase`（PostgreSQL public）と一致することを確認して裏取り。
+  - **代替案と却下理由**: アクティブ config が指す `hope-care-ai` … 名称不一致かつ `apikeys.keys.list` 権限拒否で発行不可。`gen-lang-client-*`/`hopecarekibounoie` 等 … 愛の集いとの紐付け根拠なし。
+- **判断2: `apikeys.googleapis.com` と `generativelanguage.googleapis.com` を `ainotudoisql` で有効化**
+  - **理由**: API キー作成 API が未有効だったため必須。キー制約先（Gemini）も有効化しないと実用にならないため併せて有効化。
+- **判断3: 全キーを Gemini（`generativelanguage.googleapis.com`）に API 制約**
+  - **理由**: 用途は GAS の GeminiHelper、無制約キーは漏洩時被害が広い。ユーザ選択により制約を採用。
+- **発行内容**: displayName `ainotudoi-gas-1/2/3`（UID は `gcloud services api-keys list --project=ainotudoisql` で参照）。**キー文字列は機密のため本ログには記載しない**。GAS は Script Properties 経由で参照、public リポにはコミットしない。
+- **影響範囲**: GCP プロジェクト `ainotudoisql`（API 2 件有効化・API キー 3 件新規作成）。リポ内ファイル変更なし。
+- **判断者**: Claude Code
+- **注意**: 失効は `gcloud services api-keys delete <UID> --project=ainotudoisql`。実行アカウントは `dev-support@ordentier-corp.co.jp`（config `hopecareai`）。CLAUDE.md 期待の config `ainotudoi` は未作成のため `--project` 明示で実行した。
+
+## 2026-06-10: 2つ目の AppSheet アプリ「請求_HopeCareDX_愛の集い」を MCP に登録
+
+メインアプリのコピーで構築した請求アプリ（App Id `f6ddf60e-a346-4d4c-a143-eeb9aed81287`）を MCP で扱えるよう登録した。
+
+- **判断1: Access Key を `C:\dev\AppsheetMCP\.env` に追記（リポ外・gitignore）**
+  - **理由**: 既存方針（機密は AppsheetMCP 側 .env）。`APPSHEET_ACCESS_KEY__f6ddf60e-...` を追加。
+- **判断2: snapshot は Cookie 直 curl（urllib）で取得しサーバー再起動を待たずに作成**
+  - **理由**: 起動中 MCP は .env を起動時1度のみ読むため追記直後は MCP ツールが Access Key 未検出で弾く（既知の落とし穴）。loadApp/openapi は Cookie 認証で叩けるため、`snapshots\appdef-f6ddf60e-...json`（Version 1.000003 / 40 DataSets）と `snapshots\openapi-f6ddf60e-...json`（98 paths）を直接生成。同一アカウント（dev-support@ordentier-corp.co.jp / Owner 443914355）の既存 Cookie をそのまま流用。
+  - **代替案と却下理由**: Claude Code 再起動を先に求める … 取得作業を止めずに進めるため後回し（最終的に再起動は必要）。
+- **判断3: OpenAPI は Access Key 経由が 401 のため Cookie 経由で取得**
+  - **理由**: Access Key 版 openapi が 401（コピー直後で当アプリの「Enable API」未設定の可能性）。Cookie 版は 200。データ行 API（find_records 等）は再起動後に preflight で疎通確認し、401 なら当アプリ側で API 有効化が必要。
+- **影響範囲**: `C:\dev\AppsheetMCP\.env`（Access Key 追記）, `snapshots\appdef-f6ddf60e-...json`, `snapshots\openapi-f6ddf60e-...json`。ainotudoi リポのコード変更なし。
+- **判断者**: Claude Code
+- **注意**: MCP ツールで当アプリを使うには **Claude Code の完全再起動**が必須（.env 再読込）。再起動後 `appsheet_preflight`（appId=f6ddf60e-..., appName=請求_HopeCareDX_愛の集い-443914355）で writeReady と api_reachable を確認する。
+
+## 2026-06-10: 原本 GAS「HopeCare_CloudSQL_移行版」を `モデルサンプル/` にクローンし ainotudoi へ差分マージ
+
+原本（scriptId `1HCWiA28dc1kmqfMF-cDNZAGZsYv9S-ivnDA_5jinwunL_Qqhs1y0r3cP`）を `モデルサンプル/HopeCare_CloudSQL_移行版/` にクローン（git 管理対象）。ユーザ指示「原本の堅牢点と機能ファイルを取り込み、ainotudoi の改善は活かし、移行スクリプトは無視」に従い `gas/HopeCare_CloudSQL_移行版_ainotudoi/` へマージ。マージ方式は Claude Code が判断した。
+
+- **判断1: 200/201/子展開 は原本を丸ごと採用（wholesale）**
+  - **理由**: 差分精査の結果これら 3 ファイルは ainotudoi 側に独自改善が無く「機能削除のみ」だった（200=排他ロック削除、201=進捗メモ＋明示カラム削除、子展開=後追い非同期フォールバック撤去）。原本が堅牢版のため丸ごと戻すのが安全かつ自己完結。`selectAsObjects_(...,columns)` は 201 内定義・201 内呼出に閉じており、`columns` は任意引数（未指定で `SELECT *`）と確認済み。
+  - **代替案と却下理由**: 行単位の部分マージ … 削除のみのため差分が大きく、かえって誤マージ риск大。
+- **判断2: AI帳票出力 のみ部分マージ**
+  - **理由**: 当ファイルは原本の `case '帳票スプシ生成' → runHyohyoSpushiGenerate_` と ainotudoi の `nowJST_()`（JST 補正）の**双方を残す**必要があった。ainotudoi 版を base に case のみ復活させ、nowJST_ 改善（6箇所）を保持。
+- **判断3: 機能ファイル3本（210_ResetAIContextWorker / ひな型複製_帳票登録_整理 ×2）をコピー、移行スクリプト（migrate_01〜05 / verify_migration / test_cloudsql）は除外**
+  - **理由**: ユーザ指示（機能ファイルは取り込み・移行スクリプトは無視）。verify_migration/test_cloudsql は移行・テスト用スキャフォールドのため機能ファイルに含めず除外。
+- **判断4: Slack ラベル `HAHAHA__` → `あいのつどい_`**（ユーザ指示）。`appsscript.json` の追加スコープ `cloud-platform`/`userinfo.email` は ainotudoi 改善として維持。
+- **検証**: 関数重複定義なし／復活機能の依存関数（runHyohyoSpushiGenerate_・enqueueHyohyoSpushiJob_・updateQueueMemo_・recordPlaceholderPositionsToMaster_step01_・copyExistingSpreadsheetIfNeeded_step01_）すべて定義済み／HAHAHA 残存なし、を grep 検証済み。
+- **影響範囲**: `gas/HopeCare_CloudSQL_移行版_ainotudoi/`（5ファイル変更＋3ファイル新規）, `モデルサンプル/HopeCare_CloudSQL_移行版/`（新規クローン）。
+- **判断者**: Claude Code
+- **未実施（要承認）**: ローカル編集のみ。**本番 GAS への `clasp push` は未実行**（外部反映のためユーザ承認後に実施）。
+- **追補（同日, verifier クロス検証 2 体 = APPROVE 後）**:
+  - 機能ファイルのうち `ひな型複製_帳票登録_整理.js` / `_CloudSQL.js` は中身が **退役マーカー（全行コメント・実行コード0行）** であり、原本では既存機能コードを上書き停止させる墓標だったが、ainotudoi には停止対象の機能が元々無く純粋なメモ化＋他事業所(HopeCare)リソース ID コメント混入になるため、**ユーザ承認のうえ削除**。取り込む機能ファイルは `210_ResetAIContextWorker.js`（AppSheet「AIリセット」→ request_queue へ RESET_PENDING 転記する生きた Worker）の 1 本のみとした。`210` は 5〜10 分の時間トリガー設置が運用前提（ユーザが設置予定）。
+  - **時刻基準が 2 系統併存**: `AIジョブキュー` 系は DB `NOW()`（Cloud SQL サーバ時刻）、CRUD 系は `nowJST_()`（GAS 側 UTC+9h 補正）。今回のマージ意図（既存 JST 補正の維持）に合致するため修正せず、将来デバッグ用に併存を明記。

@@ -14,7 +14,7 @@ function sendSlackNotification(message) {
   }
 
   var payload = {
-    text: message + ' あいのつどい_HopeCareCloudSQL',
+    text: message + ' toyosato__HopeCareCloudSQL',
     channel: 'slack通知'
   };
 
