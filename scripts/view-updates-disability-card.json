@@ -78,5 +78,65 @@
       "ContractEndDate__c",
       "MonthlyAllotmentDays__c"
     ]
+  },
+  {
+    "view_name": "DisabilityCard__c_Form",
+    "after_column": "UpperLimitMgmt__c",
+    "new_columns": [
+      "UpperLimitFacilityNumber__c",
+      "UpperLimitFacilityName__c",
+      "UpperLimitResult__c"
+    ]
+  },
+  {
+    "view_name": "DisabilityCard__c_Form",
+    "after_column": "CertPeriodEnd__c",
+    "new_columns": [
+      "ContractType__c",
+      "ContractRowNumber__c",
+      "ContractStartDate__c",
+      "ContractEndDate__c",
+      "MonthlyAllotmentDays__c"
+    ]
+  },
+  {
+    "view_name": "DisabilityCard__c_Detail",
+    "after_column": "UpperLimitMgmt__c",
+    "new_columns": [
+      "UpperLimitFacilityNumber__c",
+      "UpperLimitFacilityName__c",
+      "UpperLimitResult__c"
+    ]
+  },
+  {
+    "view_name": "DisabilityCard__c_Detail",
+    "after_column": "CertPeriodEnd__c",
+    "new_columns": [
+      "ContractType__c",
+      "ContractRowNumber__c",
+      "ContractStartDate__c",
+      "ContractEndDate__c",
+      "MonthlyAllotmentDays__c"
+    ]
+  },
+  {
+    "view_name": "DisabilityCard__c_Inline",
+    "after_column": "UpperLimitAmount__c",
+    "new_columns": [
+      "UpperLimitFacilityNumber__c",
+      "UpperLimitFacilityName__c",
+      "UpperLimitResult__c"
+    ]
+  },
+  {
+    "view_name": "DisabilityCard__c_Inline",
+    "after_column": "CertPeriodEnd__c",
+    "new_columns": [
+      "ContractType__c",
+      "ContractRowNumber__c",
+      "ContractStartDate__c",
+      "ContractEndDate__c",
+      "MonthlyAllotmentDays__c"
+    ]
   }
 ]

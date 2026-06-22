@@ -1,0 +1,12 @@
+[
+  {
+    "table": "DisabilityCard__c",
+    "column": "ContractRowNumber__c",
+    "type": "Number"
+  },
+  {
+    "table": "DisabilityCard__c",
+    "column": "MonthlyAllotmentDays__c",
+    "type": "Number"
+  }
+]
