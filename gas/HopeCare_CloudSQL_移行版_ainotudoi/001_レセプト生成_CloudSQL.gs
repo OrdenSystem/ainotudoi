@@ -181,7 +181,14 @@ function makeReceptBackground() {
   console.log("⏳ メイン処理（executeMakeRecept）実行中...");
   let result;
   try {
-    result = executeMakeRecept(
+    // ★ Phase D-3 追加: category により入所系3サービスを別関数へディスパッチ
+    //   pickExecuteMakeReceptFunction_ は 001_レセプト生成_入所系.gs で定義
+    //   入所系3 → executeMakeReceptInsho / その他 → executeMakeRecept（既存）
+    const _executeFn =
+      typeof pickExecuteMakeReceptFunction_ === "function"
+        ? pickExecuteMakeReceptFunction_(p.category)
+        : executeMakeRecept;
+    result = _executeFn(
       p.seikyuID,
       p.appSSdbURL,
       p.category,
