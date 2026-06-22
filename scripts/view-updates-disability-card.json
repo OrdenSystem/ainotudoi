@@ -1,0 +1,82 @@
+[
+  {
+    "view_name": "障害福祉サービス受給者証_Form",
+    "after_column": "UpperLimitMgmt__c",
+    "new_columns": [
+      "UpperLimitFacilityNumber__c",
+      "UpperLimitFacilityName__c",
+      "UpperLimitResult__c"
+    ]
+  },
+  {
+    "view_name": "障害福祉サービス受給者証_Form",
+    "after_column": "CertPeriodEnd__c",
+    "new_columns": [
+      "ContractType__c",
+      "ContractRowNumber__c",
+      "ContractStartDate__c",
+      "ContractEndDate__c",
+      "MonthlyAllotmentDays__c"
+    ]
+  },
+  {
+    "view_name": "障害福祉サービス受給者証_Detail",
+    "after_column": "UpperLimitMgmt__c",
+    "new_columns": [
+      "UpperLimitFacilityNumber__c",
+      "UpperLimitFacilityName__c",
+      "UpperLimitResult__c"
+    ]
+  },
+  {
+    "view_name": "障害福祉サービス受給者証_Detail",
+    "after_column": "CertPeriodEnd__c",
+    "new_columns": [
+      "ContractType__c",
+      "ContractRowNumber__c",
+      "ContractStartDate__c",
+      "ContractEndDate__c",
+      "MonthlyAllotmentDays__c"
+    ]
+  },
+  {
+    "view_name": "障害児通所受給者証_Form",
+    "after_column": "UpperLimitMgmt__c",
+    "new_columns": [
+      "UpperLimitFacilityNumber__c",
+      "UpperLimitFacilityName__c",
+      "UpperLimitResult__c"
+    ]
+  },
+  {
+    "view_name": "障害児通所受給者証_Form",
+    "after_column": "CertPeriodEnd__c",
+    "new_columns": [
+      "ContractType__c",
+      "ContractRowNumber__c",
+      "ContractStartDate__c",
+      "ContractEndDate__c",
+      "MonthlyAllotmentDays__c"
+    ]
+  },
+  {
+    "view_name": "障害児通所受給者証_Detail",
+    "after_column": "UpperLimitAmount__c",
+    "new_columns": [
+      "UpperLimitFacilityNumber__c",
+      "UpperLimitFacilityName__c",
+      "UpperLimitResult__c"
+    ]
+  },
+  {
+    "view_name": "障害児通所受給者証_Detail",
+    "after_column": "CertPeriodEnd__c",
+    "new_columns": [
+      "ContractType__c",
+      "ContractRowNumber__c",
+      "ContractStartDate__c",
+      "ContractEndDate__c",
+      "MonthlyAllotmentDays__c"
+    ]
+  }
+]
