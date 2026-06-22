@@ -8,3 +8,13 @@ playwright-userdata/
 snapshots/
 samples/
 *.log
+
+# upstream/main worktree (snapshot for subagent reads)
+welfare-pdca/_upstream-snapshot/
+
+# リタリコ提供 Excel テンプレート（第三者知財・履歴に入れない）
+Excelマスタ/
+
+# Salesforce DX 一時生成物
+welfare-pdca/sf-deploy/.sf/
+welfare-pdca/sf-deploy/.sfdx/
