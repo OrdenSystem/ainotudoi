@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "appsheet": {
+      "command": "node",
+      "args": ["C:/dev/ainotudoi/dist/index.js"],
+      "cwd": "C:/dev/ainotudoi"
+    }
+  }
+}
