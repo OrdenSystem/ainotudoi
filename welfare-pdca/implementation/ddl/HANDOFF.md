@@ -9,19 +9,25 @@
 
 `lab@appsheet.fun`（依頼者）は CloudSQL の psql 実行権限を持たず、`dev-support@ordentier-corp.co.jp` のみが本番 DB への接続権を持つ。本書は権限保持者が**手元で 1 回ずつ DDL を適用し、エラーゼロで完了させる**ための単独完結手順書。
 
-## 適用対象（5 ファイル）
+## 適用対象（6 ファイル・日本語名）
 
-> 全 SQL ファイルは [`welfare-pdca/implementation/ddl/`](.) に格納（commit `70a6804` に含まれる）。
+> 全 SQL ファイルは [`welfare-pdca/implementation/ddl/`](.) に格納。
 
 | 順序 | ファイル | テーブル | 依存 |
 |---|---|---|---|
-| 1 | [`09_municipalities.sql`](09_municipalities.sql) | `public.municipalities` | なし |
-| 2 | [`10_municipality_unit_prices.sql`](10_municipality_unit_prices.sql) | `public.municipality_unit_prices` | 09 (FK) |
-| 3 | [`06_child_care_entry_records.sql`](06_child_care_entry_records.sql) | `public.child_care_entry_records` | なし |
-| 4 | [`07_short_stay_records.sql`](07_short_stay_records.sql) | `public.short_stay_records` | なし |
-| 5 | [`08_daytime_temp_support_records.sql`](08_daytime_temp_support_records.sql) | `public.daytime_temp_support_records` | なし（`shichoson_id` は FK 制約なし） |
+| 1 | [`09_市町村マスタ.sql`](09_市町村マスタ.sql) | `public."市町村マスタ"` | なし |
+| 2 | [`10_日中一時単価マスタ.sql`](10_日中一時単価マスタ.sql) | `public."日中一時単価マスタ"` | 09 (FK) |
+| 3 | [`06_児童入所登録.sql`](06_児童入所登録.sql) | `public."児童入所登録"` | なし |
+| 4 | [`07_短期入所登録.sql`](07_短期入所登録.sql) | `public."短期入所登録"` | なし |
+| 5 | [`08_日中一時登録.sql`](08_日中一時登録.sql) | `public."日中一時登録"` | なし（`市町村ID` は FK 制約なし） |
+| 6 | [`11_ケース記録_FK追加.sql`](11_ケース記録_FK追加.sql) | **既存** `public."ケース記録"` に 3 列追加 | 06〜08（命名整合性のため最後） |
 
 各 SQL は `BEGIN; ... COMMIT;` で囲まれており、テーブル単位でアトミック。失敗時は自動ロールバックされる。
+
+### 命名規約（2026-06-22 ユーザー方針）
+- テーブル名・列名は **日本語**（既存「01相談記録」と統一）
+- **「登録」を採用**（UI 表示と同一・既存「01相談記録」も UI では「相談登録」）
+- ケース記録 へは破壊的 ALTER せず、列追加のみ（既存非破壊）
 
 ## 事前確認チェックリスト
 
@@ -45,10 +51,15 @@ SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;
 ```sql
 SELECT tablename FROM pg_tables
 WHERE schemaname = 'public'
-  AND tablename IN ('municipalities', 'municipality_unit_prices',
-                    'child_care_entry_records', 'short_stay_records',
-                    'daytime_temp_support_records');
+  AND tablename IN ('市町村マスタ', '日中一時単価マスタ',
+                    '児童入所登録', '短期入所登録', '日中一時登録');
 -- 期待結果: 0 件（テーブル未存在）
+
+-- ケース記録に既存列確認（11 適用後に 3 列追加を期待）
+SELECT column_name FROM information_schema.columns
+WHERE table_schema = 'public' AND table_name = 'ケース記録'
+  AND column_name IN ('児童入所登録ID', '短期入所登録ID', '日中一時登録ID');
+-- 期待結果（適用前）: 0 件 / （適用後）: 3 件
 ```
 
 ## 実行手順
@@ -76,13 +87,14 @@ psql "host=127.0.0.1 port=5435 dbname=hopecare user=postgres" -c "SELECT version
 ```bash
 cd /path/to/welfare-pdca/implementation/ddl
 
-# 依存関係順 (09 → 10 → 06 → 07 → 08)
+# 依存関係順 (09 → 10 → 06 → 07 → 08 → 11)
 APPLY_ORDER=(
-  09_municipalities.sql
-  10_municipality_unit_prices.sql
-  06_child_care_entry_records.sql
-  07_short_stay_records.sql
-  08_daytime_temp_support_records.sql
+  09_市町村マスタ.sql
+  10_日中一時単価マスタ.sql
+  06_児童入所登録.sql
+  07_短期入所登録.sql
+  08_日中一時登録.sql
+  11_ケース記録_FK追加.sql
 )
 
 for f in "${APPLY_ORDER[@]}"; do
@@ -104,54 +116,55 @@ echo "All 5 files applied successfully."
 
 ```bash
 psql "host=127.0.0.1 port=5435 dbname=hopecare user=postgres" <<'SQL'
--- 1. テーブル数（既存 7 + 新規 5 = 12）
+-- 1. テーブル数（既存 7 + 新規 5 = 12。ケース記録は ALTER のみで増えない）
 SELECT COUNT(*) AS total_tables FROM pg_tables WHERE schemaname = 'public';
 
 -- 2. 新規 5 テーブル存在確認
 SELECT tablename FROM pg_tables
 WHERE schemaname = 'public'
-  AND tablename IN ('municipalities', 'municipality_unit_prices',
-                    'child_care_entry_records', 'short_stay_records',
-                    'daytime_temp_support_records')
+  AND tablename IN ('市町村マスタ', '日中一時単価マスタ',
+                    '児童入所登録', '短期入所登録', '日中一時登録')
 ORDER BY tablename;
 
--- 3. 各テーブルの列数確認
+-- 3. ケース記録に新 3 列が追加されたか
+SELECT column_name FROM information_schema.columns
+WHERE table_schema = 'public' AND table_name = 'ケース記録'
+  AND column_name IN ('児童入所登録ID', '短期入所登録ID', '日中一時登録ID');
+-- 期待結果: 3 件
+
+-- 4. 各テーブルの列数確認
 SELECT
   c.relname AS table_name,
   COUNT(a.attname) AS column_count
 FROM pg_class c
 JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0
-WHERE c.relname IN ('municipalities', 'municipality_unit_prices',
-                    'child_care_entry_records', 'short_stay_records',
-                    'daytime_temp_support_records')
+WHERE c.relname IN ('市町村マスタ', '日中一時単価マスタ',
+                    '児童入所登録', '短期入所登録', '日中一時登録')
 GROUP BY c.relname
 ORDER BY c.relname;
 -- 期待値:
---   municipalities: 7
---   municipality_unit_prices: 8
---   child_care_entry_records: 39
---   short_stay_records: 37
---   daytime_temp_support_records: 41
+--   市町村マスタ: 7
+--   日中一時単価マスタ: 9
+--   児童入所登録: 39
+--   短期入所登録: 38
+--   日中一時登録: 42
 
--- 4. FK 制約確認
+-- 5. FK 制約確認
 SELECT
   conrelid::regclass AS table_name,
   conname AS constraint_name,
   pg_get_constraintdef(oid) AS definition
 FROM pg_constraint
-WHERE conrelid IN (
-  'public.municipality_unit_prices'::regclass
-)
-AND contype = 'f';
--- 期待値: fk_mup_shichoson FOREIGN KEY (shichoson_id) REFERENCES municipalities(shichoson_id) ON DELETE RESTRICT
+WHERE conrelid = 'public."日中一時単価マスタ"'::regclass
+  AND contype = 'f';
+-- 期待値: fk_単価_市町村 FOREIGN KEY ("市町村ID") REFERENCES "市町村マスタ"("市町村ID")
 
--- 5. UNIQUE 部分 INDEX 確認
-SELECT indexname, indexdef FROM pg_indexes
-WHERE tablename IN ('child_care_entry_records', 'short_stay_records',
-                    'daytime_temp_support_records', 'municipality_unit_prices')
+-- 6. UNIQUE 部分 INDEX 確認
+SELECT indexname FROM pg_indexes
+WHERE tablename IN ('児童入所登録', '短期入所登録', '日中一時登録', '日中一時単価マスタ')
   AND indexname LIKE '%unique%'
 ORDER BY indexname;
--- 期待値: 4 件（各業務テーブルに 1 件 + mup_unique_active）
+-- 期待値: 4 件
 SQL
 ```
 
