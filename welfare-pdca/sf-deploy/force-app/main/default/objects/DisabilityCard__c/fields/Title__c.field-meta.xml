@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Title__c</fullName>
+    <externalId>false</externalId>
+    <formula>MID ( TEXT ( DeliveryDate__c )  , 1 , 4 ) &amp; &quot;/&quot; &amp;
+MID ( TEXT ( DeliveryDate__c  )  , 6 , 2 ) &amp; &quot;_&quot; &amp;
+ Customer__r.Name   &amp; &quot;_&quot; &amp;
+( IF ( ISBLANK ( TEXT ( Type__c )) , &quot;受給者証&quot; , TEXT ( Type__c ) ))</formula>
+    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
+    <label>タイトル</label>
+    <required>false</required>
+    <trackHistory>false</trackHistory>
+    <trackTrending>false</trackTrending>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

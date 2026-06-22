@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>受給者証 入所系3サービス追加列の FLS 付与（契約情報 5 列 + 上限管理事業所 3 列）</description>
+    <hasActivationRequired>false</hasActivationRequired>
+    <label>受給者証_入所系追加列_FLS</label>
+    <license>Salesforce</license>
+    <fieldPermissions>
+        <editable>true</editable>
+        <field>DisabilityCard__c.ContractRowNumber__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable>
+        <field>DisabilityCard__c.ContractStartDate__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable>
+        <field>DisabilityCard__c.ContractEndDate__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable>
+        <field>DisabilityCard__c.MonthlyAllotmentDays__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable>
+        <field>DisabilityCard__c.UpperLimitFacilityNumber__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable>
+        <field>DisabilityCard__c.UpperLimitFacilityName__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable>
+        <field>DisabilityCard__c.UpperLimitResult__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable>
+        <field>DisabilityCard__c.ContractType__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+</PermissionSet>

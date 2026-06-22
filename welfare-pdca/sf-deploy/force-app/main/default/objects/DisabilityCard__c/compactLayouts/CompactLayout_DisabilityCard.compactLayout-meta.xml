@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CompactLayout xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>CompactLayout_DisabilityCard</fullName>
+    <fields>Title__c</fields>
+    <fields>Customer__c</fields>
+    <fields>DeliveryDate__c</fields>
+    <fields>MunicipalityMaster__c</fields>
+    <fields>MonitoringPeriod__c</fields>
+    <fields>CertPeriodEnd__c</fields>
+    <label>受給者証コンパクトレイアウト</label>
+</CompactLayout>

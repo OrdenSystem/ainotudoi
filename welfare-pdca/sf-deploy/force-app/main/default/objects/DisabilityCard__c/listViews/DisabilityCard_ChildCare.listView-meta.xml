@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ListView xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>DisabilityCard_ChildCare</fullName>
+    <columns>NAME</columns>
+    <columns>Title__c</columns>
+    <columns>Customer__c</columns>
+    <columns>DeliveryDate__c</columns>
+    <columns>JukyuNumber__c</columns>
+    <columns>MunicipalityMaster__c</columns>
+    <filterScope>Everything</filterScope>
+    <filters>
+        <field>Type__c</field>
+        <operation>equals</operation>
+        <value>通所受給者証</value>
+    </filters>
+    <label>通所受給者証</label>
+</ListView>

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>GuardianZenkakuKana__c</fullName>
+    <externalId>false</externalId>
+    <formula>SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE ( SUBSTITUTE (
+SUBSTITUTE ( SUBSTITUTE (
+GuardianFurigana__c ,
+&quot;あ&quot; , &quot;ア&quot; ) , &quot;い&quot; , &quot;イ&quot; ) , &quot;う&quot; , &quot;ウ&quot; ) , &quot;え&quot; , &quot;エ&quot; ) , &quot;お&quot; , &quot;オ&quot; ) ,
+&quot;か&quot; , &quot;カ&quot; ) , &quot;き&quot; , &quot;キ&quot; ) , &quot;く&quot; , &quot;ク&quot; ) , &quot;け&quot; , &quot;ケ&quot; ) , &quot;こ&quot; , &quot;コ&quot; ) ,
+&quot;さ&quot; , &quot;サ&quot; ) , &quot;し&quot; , &quot;シ&quot; ) , &quot;す&quot; , &quot;ス&quot; ) , &quot;せ&quot; , &quot;セ&quot; ) , &quot;そ&quot; , &quot;ソ&quot; ) ,
+&quot;た&quot; , &quot;タ&quot; ) , &quot;ち&quot; , &quot;チ&quot; ) , &quot;つ&quot; , &quot;ツ&quot; ) , &quot;て&quot; , &quot;テ&quot; ) , &quot;と&quot; , &quot;ト&quot; ) ,
+&quot;な&quot; , &quot;ナ&quot; ) , &quot;に&quot; , &quot;ニ&quot; ) , &quot;ぬ&quot; , &quot;ヌ&quot; ) , &quot;ね&quot; , &quot;ネ&quot; ) , &quot;の&quot; , &quot;ノ&quot; ) ,
+&quot;は&quot; , &quot;ハ&quot; ) , &quot;ひ&quot; , &quot;ヒ&quot; ) , &quot;ふ&quot; , &quot;フ&quot; ) , &quot;へ&quot; , &quot;ヘ&quot; ) , &quot;ほ&quot; , &quot;ホ&quot; ) ,
+&quot;ま&quot; , &quot;マ&quot; ) , &quot;み&quot; , &quot;ミ&quot; ) , &quot;む&quot; , &quot;ム&quot; ) , &quot;め&quot; , &quot;メ&quot; ) , &quot;も&quot; , &quot;モ&quot; ) ,
+&quot;や&quot; , &quot;ヤ&quot; ) , &quot;ゆ&quot; , &quot;ユ&quot; ) , &quot;よ&quot; , &quot;ヨ&quot; ) ,
+&quot;ら&quot; , &quot;ラ&quot; ) , &quot;り&quot; , &quot;リ&quot; ) , &quot;る&quot; , &quot;ル&quot; ) , &quot;れ&quot; , &quot;レ&quot; ) , &quot;ろ&quot; , &quot;ロ&quot; ) ,
+&quot;わ&quot; , &quot;ワ&quot; ) , &quot;ん&quot; , &quot;ン&quot; ) , &quot;を&quot; , &quot;ヲ&quot; ) ,
+&quot;ぁ&quot; , &quot;ァ&quot; ) , &quot;ぃ&quot; , &quot;ィ&quot; ) , &quot;ぅ&quot; , &quot;ゥ&quot; ) , &quot;ぇ&quot; , &quot;ェ&quot; ) , &quot;ぉ&quot; , &quot;ォ&quot; ) ,
+&quot;が&quot; , &quot;ガ&quot; ) , &quot;ぎ&quot; , &quot;ギ&quot; ) , &quot;ぐ&quot; , &quot;グ&quot; ) , &quot;げ&quot; , &quot;ゲ&quot; ) , &quot;ご&quot; , &quot;ゴ&quot; ) ,
+&quot;ざ&quot; , &quot;ザ&quot; ) , &quot;じ&quot; , &quot;ジ&quot; ) , &quot;ず&quot; , &quot;ズ&quot; ) , &quot;ぜ&quot; , &quot;ゼ&quot; ) , &quot;ぞ&quot; , &quot;ゾ&quot; ) ,
+&quot;だ&quot; , &quot;ダ&quot; ) , &quot;ぢ&quot; , &quot;ヂ&quot; ) , &quot;づ&quot; , &quot;ヅ&quot; ) , &quot;で&quot; , &quot;デ&quot; ) , &quot;ど&quot; , &quot;ド&quot; ) ,
+&quot;ば&quot; , &quot;バ&quot; ) , &quot;び&quot; , &quot;ビ&quot; ) , &quot;ぶ&quot; , &quot;ブ&quot; ) , &quot;べ&quot; , &quot;ベ&quot; ) , &quot;ぼ&quot; , &quot;ボ&quot; ) ,
+&quot;ぱ&quot; , &quot;パ&quot; ) , &quot;ぴ&quot; , &quot;ピ&quot; ) , &quot;ぷ&quot; , &quot;プ&quot; ) , &quot;ぺ&quot; , &quot;ペ&quot; ) , &quot;ぽ&quot; , &quot;ポ&quot; ) ,
+&quot;ゃ&quot; , &quot;ャ&quot; ) , &quot;ゅ&quot; , &quot;ュ&quot; ) , &quot;ょ&quot; , &quot;ョ&quot; ) ,
+&quot;ゎ&quot; , &quot;ヮ&quot; ) , &quot;ゔ&quot; , &quot;ヴ&quot; ) , &quot;っ&quot; , &quot;ッ&quot; )</formula>
+    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
+    <label>保護者氏名カナ</label>
+    <required>false</required>
+    <trackHistory>false</trackHistory>
+    <trackTrending>false</trackTrending>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

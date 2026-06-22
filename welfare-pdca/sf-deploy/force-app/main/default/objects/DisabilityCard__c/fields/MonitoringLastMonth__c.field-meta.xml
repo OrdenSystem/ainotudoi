@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>MonitoringLastMonth__c</fullName>
+    <label>モニタリング：先月</label>
+    <required>false</required>
+    <trackFeedHistory>false</trackFeedHistory>
+    <trackHistory>false</trackHistory>
+    <trackTrending>false</trackTrending>
+    <type>Picklist</type>
+    <valueSet>
+        <restricted>true</restricted>
+        <valueSetDefinition>
+            <sorted>false</sorted>
+            <value>
+                <fullName>〇</fullName>
+                <default>false</default>
+                <label>〇</label>
+            </value>
+            <value>
+                <fullName>〇手</fullName>
+                <default>false</default>
+                <label>〇手</label>
+            </value>
+            <value>
+                <fullName>〇終</fullName>
+                <default>false</default>
+                <label>〇終</label>
+            </value>
+        </valueSetDefinition>
+    </valueSet>
+</CustomField>
